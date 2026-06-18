@@ -1,0 +1,13 @@
+{
+  "album": {
+    "mbid": "123",
+    "artist": "Artist",
+    "name": "Album",
+    "tags": {
+      "tag": [
+        {"name": "Art Pop"},
+        {"name": "Dream Pop"}
+      ]
+    }
+  }
+}
