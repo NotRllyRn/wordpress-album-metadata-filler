@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass(frozen=True, slots=True)
@@ -12,6 +13,17 @@ class Track:
     spotify_id: str | None
     highlight: bool
     explicit: bool
+
+    def to_dict(self) -> dict:
+        return {
+            "disc_number": self.disc_number,
+            "track_number": self.track_number,
+            "title": self.title,
+            "duration_ms": self.duration_ms,
+            "spotify_id": self.spotify_id,
+            "highlight": self.highlight,
+            "explicit": self.explicit,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,10 +47,20 @@ class SourcePost:
     acf: dict
     tracks: list[Track]
     previous_listens: list[PreviousListen]
+    published_at: str | None
 
 
 @dataclass(frozen=True, slots=True)
 class EnrichedPost:
     post_id: int
-    acf_updates: dict
+    acf_updates: dict[str, Any]
     taxonomy_updates: dict[str, list[str]]
+
+
+@dataclass(frozen=True, slots=True)
+class LastfmMatch:
+    release_id: str | None
+    release_date: str | None
+    tags: list[str]
+    confidence: str
+    score: int

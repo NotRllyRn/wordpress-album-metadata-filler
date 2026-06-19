@@ -1,1 +1,1 @@
-__all__ = ["config", "wordpress_api"]
+__all__ = ["cli", "config", "diff", "enrich", "lastfm", "models", "normalize", "report", "wordpress_api"]

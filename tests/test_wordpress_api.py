@@ -36,8 +36,8 @@ def test_fetch_posts_page_requests_acf_fields(httpx_mock):
 
     request = httpx_mock.get_request()
     assert request.headers["Authorization"] == "Basic token"
-    assert request.url == "https://example.com/wp-json/wp/v2/posts?page=2&per_page=5&_fields=id%2Ctitle%2Cacf%2Cmeta%2Cgenre"
-    assert rows == [{"id": 1, "acf": {}}]
+    assert request.url == "https://example.com/wp-json/wp/v2/posts?page=2&per_page=5&_fields=id%2Ctitle%2Cacf%2Cmeta%2Cgenre%2Cdate%2Cdate_gmt"
+    assert rows == [{"id": 1, "acf": {}}]  
 
 
 def test_resolve_taxonomy_term_ids_looks_up_slugs(httpx_mock):

@@ -13,6 +13,11 @@ class ProbeResult:
     sample_post_id: int | None
 
 
+def ensure_https(base_url: str) -> None:
+    if not base_url.lower().startswith("https://"):
+        print("WARNING: The WordPress base URL does not use HTTPS. This is required for authentication and writes. Aborting.")
+
+
 def probe_wordpress_api(base_url: str, auth_header: str | None, timeout_s: float) -> ProbeResult:
     headers = {"Authorization": auth_header} if auth_header else {}
     url = f"{base_url.rstrip('/')}/wp-json/wp/v2/posts?per_page=1&_fields=id,acf,meta"
@@ -37,6 +42,12 @@ def build_basic_auth_header(username: str, app_password: str) -> str:
     return f"Basic {token}"
 
 
+def auth_header_for_apply(username: str | None, app_password: str | None) -> str | None:
+    if not (username and app_password):
+        return None
+    return build_basic_auth_header(username, app_password)
+
+
 def fetch_posts_page(
     base_url: str,
     auth_header: str | None,
@@ -48,7 +59,7 @@ def fetch_posts_page(
     response = httpx.get(
         f"{base_url.rstrip('/')}/wp-json/wp/v2/posts",
         headers=headers,
-        params={"page": page, "per_page": per_page, "_fields": "id,title,acf,meta,genre"},
+        params={"page": page, "per_page": per_page, "_fields": "id,title,acf,meta,genre,date,date_gmt"},
         timeout=timeout_s,
     )
     if response.status_code == 400:
@@ -79,6 +90,22 @@ def resolve_taxonomy_term_ids(
         if rows:
             term_ids.append(int(rows[0]["id"]))
     return term_ids
+
+
+def resolve_taxonomies_for_post(
+    base_url: str,
+    auth_header: str,
+    raw_post: dict,
+    taxonomy_updates: dict[str, list[str]],
+    timeout_s: float,
+) -> dict[str, list[int]]:
+    resolved: dict[str, list[int]] = {}
+    for taxonomy, slugs in taxonomy_updates.items():
+        ids = resolve_taxonomy_term_ids(base_url, auth_header, taxonomy, slugs, timeout_s)
+        current_ids = [int(value) for value in raw_post.get(taxonomy, [])]
+        if ids and ids != current_ids:
+            resolved[taxonomy] = ids
+    return resolved
 
 
 class WordpressWriteError(RuntimeError):

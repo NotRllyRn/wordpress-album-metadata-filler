@@ -15,7 +15,27 @@ def normalize_source_post(raw: Mapping[str, Any]) -> SourcePost:
         acf=dict(acf),
         tracks=parse_tracks(_rows(acf.get("music_tracks"))),
         previous_listens=parse_previous_listens(_rows(acf.get("previous-listen-posts"))),
+        published_at=_resolve_published_at(raw),
     )
+
+
+def _resolve_published_at(raw: Mapping[str, Any]) -> str | None:
+    for key in ("date_gmt", "date"):
+        value = _optional_str(raw.get(key))
+        if value:
+            return value
+    return None
+
+
+def to_wp_date_yyyymmdd(iso_or_yyyymmdd: str | None) -> str | None:
+    text = _optional_str(iso_or_yyyymmdd)
+    if text is None:
+        return None
+    if len(text) >= 10 and text[4] == "-" and text[7] == "-":
+        return text[:10].replace("-", "")
+    if len(text) == 8 and text.isdigit():
+        return text
+    return None
 
 
 def parse_tracks(rows: Sequence[Mapping[str, Any]]) -> list[Track]:

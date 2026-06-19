@@ -1,0 +1,1 @@
+{"nodes": [{"id": "tests_fixtures_lastfm_album_json", "label": "Last.fm fixture payload", "file_type": "concept", "source_file": "tests/fixtures/lastfm_album.json", "source_location": null, "source_url": null, "captured_at": null, "author": null, "contributor": null}], "edges": [], "hyperedges": []}

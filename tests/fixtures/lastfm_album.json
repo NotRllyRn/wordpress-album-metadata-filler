@@ -3,6 +3,7 @@
     "mbid": "123",
     "artist": "Artist",
     "name": "Album",
+    "releasedate": "15 Jan 2020",
     "tags": {
       "tag": [
         {"name": "Art Pop"},
