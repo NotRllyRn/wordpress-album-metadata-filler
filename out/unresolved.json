@@ -1,0 +1,231 @@
+[
+  {
+    "post_id": 497,
+    "title": "Lift Your Skinny Fists Like Antennas to Heaven",
+    "tags": [
+      87
+    ],
+    "candidates": [
+      {
+        "album_type": "album",
+        "total_tracks": 11,
+        "is_playable": true,
+        "external_urls": {
+          "spotify": "https://open.spotify.com/album/17q5eeNk3HAjX1gzQnkTX7"
+        },
+        "href": "https://api.spotify.com/v1/albums/17q5eeNk3HAjX1gzQnkTX7",
+        "id": "17q5eeNk3HAjX1gzQnkTX7",
+        "images": [
+          {
+            "height": 640,
+            "url": "https://i.scdn.co/image/ab67616d0000b273bc1e41eed3ddbdfff6f2d74b",
+            "width": 640
+          },
+          {
+            "height": 300,
+            "url": "https://i.scdn.co/image/ab67616d00001e02bc1e41eed3ddbdfff6f2d74b",
+            "width": 300
+          },
+          {
+            "height": 64,
+            "url": "https://i.scdn.co/image/ab67616d00004851bc1e41eed3ddbdfff6f2d74b",
+            "width": 64
+          }
+        ],
+        "name": "In the Aeroplane Over the Sea",
+        "release_date": "1998-02-20",
+        "release_date_precision": "day",
+        "type": "album",
+        "uri": "spotify:album:17q5eeNk3HAjX1gzQnkTX7",
+        "artists": [
+          {
+            "external_urls": {
+              "spotify": "https://open.spotify.com/artist/2ooIqOf4X2uz4mMptXCtie"
+            },
+            "href": "https://api.spotify.com/v1/artists/2ooIqOf4X2uz4mMptXCtie",
+            "id": "2ooIqOf4X2uz4mMptXCtie",
+            "name": "Neutral Milk Hotel",
+            "type": "artist",
+            "uri": "spotify:artist:2ooIqOf4X2uz4mMptXCtie"
+          }
+        ]
+      },
+      {
+        "album_type": "album",
+        "total_tracks": 19,
+        "is_playable": true,
+        "external_urls": {
+          "spotify": "https://open.spotify.com/album/4ZGAjDHKwwcMZSkDALzlSO"
+        },
+        "href": "https://api.spotify.com/v1/albums/4ZGAjDHKwwcMZSkDALzlSO",
+        "id": "4ZGAjDHKwwcMZSkDALzlSO",
+        "images": [
+          {
+            "height": 640,
+            "url": "https://i.scdn.co/image/ab67616d0000b273d83f7c3b896c9e195590e99a",
+            "width": 640
+          },
+          {
+            "height": 300,
+            "url": "https://i.scdn.co/image/ab67616d00001e02d83f7c3b896c9e195590e99a",
+            "width": 300
+          },
+          {
+            "height": 64,
+            "url": "https://i.scdn.co/image/ab67616d00004851d83f7c3b896c9e195590e99a",
+            "width": 64
+          }
+        ],
+        "name": "Ants From Up There (Deluxe)",
+        "release_date": "2022-06-10",
+        "release_date_precision": "day",
+        "type": "album",
+        "uri": "spotify:album:4ZGAjDHKwwcMZSkDALzlSO",
+        "artists": [
+          {
+            "external_urls": {
+              "spotify": "https://open.spotify.com/artist/3PP6ghmOlDl2jaKaH0avUN"
+            },
+            "href": "https://api.spotify.com/v1/artists/3PP6ghmOlDl2jaKaH0avUN",
+            "id": "3PP6ghmOlDl2jaKaH0avUN",
+            "name": "Black Country, New Road",
+            "type": "artist",
+            "uri": "spotify:artist:3PP6ghmOlDl2jaKaH0avUN"
+          }
+        ]
+      },
+      {
+        "album_type": "album",
+        "total_tracks": 13,
+        "is_playable": true,
+        "external_urls": {
+          "spotify": "https://open.spotify.com/album/6MH3CAXp8AN8ELrbex18dM"
+        },
+        "href": "https://api.spotify.com/v1/albums/6MH3CAXp8AN8ELrbex18dM",
+        "id": "6MH3CAXp8AN8ELrbex18dM",
+        "images": [
+          {
+            "height": 640,
+            "url": "https://i.scdn.co/image/ab67616d0000b273a54f2b401501b3569990c256",
+            "width": 640
+          },
+          {
+            "height": 300,
+            "url": "https://i.scdn.co/image/ab67616d00001e02a54f2b401501b3569990c256",
+            "width": 300
+          },
+          {
+            "height": 64,
+            "url": "https://i.scdn.co/image/ab67616d00004851a54f2b401501b3569990c256",
+            "width": 64
+          }
+        ],
+        "name": "Deathconsciousness",
+        "release_date": "2008-01-01",
+        "release_date_precision": "day",
+        "type": "album",
+        "uri": "spotify:album:6MH3CAXp8AN8ELrbex18dM",
+        "artists": [
+          {
+            "external_urls": {
+              "spotify": "https://open.spotify.com/artist/0FRKTwQSToXpCxYMhyUzYY"
+            },
+            "href": "https://api.spotify.com/v1/artists/0FRKTwQSToXpCxYMhyUzYY",
+            "id": "0FRKTwQSToXpCxYMhyUzYY",
+            "name": "Have A Nice Life",
+            "type": "artist",
+            "uri": "spotify:artist:0FRKTwQSToXpCxYMhyUzYY"
+          }
+        ]
+      },
+      {
+        "album_type": "album",
+        "total_tracks": 6,
+        "is_playable": true,
+        "external_urls": {
+          "spotify": "https://open.spotify.com/album/2NnkLRaeX33d1Mn8ZLgTo8"
+        },
+        "href": "https://api.spotify.com/v1/albums/2NnkLRaeX33d1Mn8ZLgTo8",
+        "id": "2NnkLRaeX33d1Mn8ZLgTo8",
+        "images": [
+          {
+            "height": 640,
+            "url": "https://i.scdn.co/image/ab67616d0000b273ca727fc0809fb501506ce413",
+            "width": 640
+          },
+          {
+            "height": 300,
+            "url": "https://i.scdn.co/image/ab67616d00001e02ca727fc0809fb501506ce413",
+            "width": 300
+          },
+          {
+            "height": 64,
+            "url": "https://i.scdn.co/image/ab67616d00004851ca727fc0809fb501506ce413",
+            "width": 64
+          }
+        ],
+        "name": "Spiderland",
+        "release_date": "1991-03-15",
+        "release_date_precision": "day",
+        "type": "album",
+        "uri": "spotify:album:2NnkLRaeX33d1Mn8ZLgTo8",
+        "artists": [
+          {
+            "external_urls": {
+              "spotify": "https://open.spotify.com/artist/4IwOItqRhsIoRuD5HP4vyC"
+            },
+            "href": "https://api.spotify.com/v1/artists/4IwOItqRhsIoRuD5HP4vyC",
+            "id": "4IwOItqRhsIoRuD5HP4vyC",
+            "name": "Slint",
+            "type": "artist",
+            "uri": "spotify:artist:4IwOItqRhsIoRuD5HP4vyC"
+          }
+        ]
+      },
+      {
+        "album_type": "album",
+        "total_tracks": 18,
+        "is_playable": true,
+        "external_urls": {
+          "spotify": "https://open.spotify.com/album/0mu3EvWYfNwBfISSg0q03p"
+        },
+        "href": "https://api.spotify.com/v1/albums/0mu3EvWYfNwBfISSg0q03p",
+        "id": "0mu3EvWYfNwBfISSg0q03p",
+        "images": [
+          {
+            "height": 640,
+            "url": "https://i.scdn.co/image/ab67616d0000b273c0588d9dcd8bd9e7a7845844",
+            "width": 640
+          },
+          {
+            "height": 300,
+            "url": "https://i.scdn.co/image/ab67616d00001e02c0588d9dcd8bd9e7a7845844",
+            "width": 300
+          },
+          {
+            "height": 64,
+            "url": "https://i.scdn.co/image/ab67616d00004851c0588d9dcd8bd9e7a7845844",
+            "width": 64
+          }
+        ],
+        "name": "Inferno",
+        "release_date": "2026-05-29",
+        "release_date_precision": "day",
+        "type": "album",
+        "uri": "spotify:album:0mu3EvWYfNwBfISSg0q03p",
+        "artists": [
+          {
+            "external_urls": {
+              "spotify": "https://open.spotify.com/artist/2VAvhf61GgLYmC6C8anyX1"
+            },
+            "href": "https://api.spotify.com/v1/artists/2VAvhf61GgLYmC6C8anyX1",
+            "id": "2VAvhf61GgLYmC6C8anyX1",
+            "name": "Boards of Canada",
+            "type": "artist",
+            "uri": "spotify:artist:2VAvhf61GgLYmC6C8anyX1"
+          }
+        ]
+      }
+    ]
+  }
+]

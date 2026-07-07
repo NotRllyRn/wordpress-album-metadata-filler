@@ -23,3 +23,11 @@ The cli will also have a dry run that instead saves the output to a json file to
 album-art-picker-v2-analysis shows you how another program interacts with the spotify api to search for things along with recommendations. ignore the talk about wordpress because another analysis gives you this.
 
 spotify-album-blog-tracker-analysis-report shows you how another program interacts with wordpress it self and some other details to how it heuristically determines releases as well.
+
+Also it while it adds data to the metadata field in scf, it will also add data to the taxonomies like Artists, Genres, and Release Types.
+
+For Artists, you can just copy and paste the tags that are currently on the post into that field taxonomy. Or you can pull them from the spotify search when you do it.
+
+For Genres, you are pulling this from LastFm and putting in the top 3 you find.
+
+For Release type, confirm the heuristic matches with what is currently in the taxonomy that is on the actual wordpress post. Then add that to the Release Type as well. I want you to note something however, some posts have multiple taxonies and that is not multiple release types. Only one of the fields is actually the release type, I also use that field to mark a post as a "Relisten", "Unreleased", or "Concert" Relisten and Unreleased already have their own fields in the metadata scf so that's where you will mark it. For now we are not going to do anything about that Concert issue.
