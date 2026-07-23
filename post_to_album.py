@@ -999,6 +999,13 @@ def validate_plan(plan: Any) -> dict:
             for key, value in write["acf"].items():
                 if key not in APPROVED_ACF_TYPES or type(value) is not APPROVED_ACF_TYPES[key]: _plan_error(path + ".write.acf." + key, "unknown or wrong type")
                 if isinstance(value, str) and not value: _plan_error(path + ".write.acf." + key, "must be nonempty")
+                if key in ("music_release_date", "music_listened_at"):
+                    try:
+                        canonical_date = datetime.strptime(value, "%d/%m/%Y").strftime("%d/%m/%Y")
+                    except ValueError:
+                        canonical_date = ""
+                    if canonical_date != value:
+                        _plan_error(path + ".write.acf." + key, "must be a valid dd/mm/YYYY date")
             if "music_tracks" in write["acf"] and not write["acf"]["music_tracks"]:
                 # Repeater replacement with an empty list would clear existing tracks.
                 _plan_error(path + ".write.acf.music_tracks", "must be nonempty")

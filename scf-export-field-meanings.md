@@ -1,6 +1,6 @@
 # SCF field meanings
 
-> **Historical export warning:** `scf-export-2026-07-05.json` predates the approved schema and must not be treated as deployed truth. The real July 23 export is absent. Plan 02 is the current implementation contract, but live rollout is blocked until the deployed export is compared field-by-field; do not fabricate schema JSON.
+> **Schema evidence:** `scf-export-2026-07-23.json` is the deployed export and has been audited as compatible with Plan 02 for active names/types, seven repeater children, `d/m/Y` dates, SCF REST exposure, and taxonomy registrations/default REST slugs. `scf-export-2026-07-05.json` remains historical. Rollout still requires a manual one-post category-ID check and verification of SCF's `default_to_current_date` behavior.
 
 ## Current Plan 02 contract
 
@@ -13,8 +13,8 @@ Provider-owned fields are filled only when empty:
 - `music_total_tracks`: Spotify album total (or imported row count fallback).
 - `music_explicit`: true when any imported track is explicit.
 - `spotify_album_id`, `spotify_album_url`: selected Spotify album identity and URL.
-- `music_release_date`: canonical Spotify release date formatted for SCF.
-- `music_listened_at`: WordPress post date formatted for SCF.
+- `music_release_date`: canonical Spotify release date formatted as calendar-valid `dd/mm/YYYY` for SCF.
+- `music_listened_at`: WordPress post date formatted as calendar-valid `dd/mm/YYYY` for SCF.
 - `lastfm_release_id`: MusicBrainz ID returned by the validated Last.fm `album.getInfo` result. It is omitted and diagnosed when absent; search-result MBID is used to prefer the getInfo lookup, not blindly stored.
 - `listen_count`: defaults to integer `1` when empty.
 

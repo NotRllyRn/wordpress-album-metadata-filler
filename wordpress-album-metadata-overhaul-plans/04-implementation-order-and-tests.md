@@ -13,7 +13,7 @@ Plan 01 owns search/matching tests. Plan 02 owns SCF, taxonomy, and category pay
 - Work remains single-writer and commits remain sequential.
 - Use targeted staging only. Never touch or stage `out/planned_patches.json`.
 - Automated tests use fixtures/fakes and make no live WordPress writes.
-- The real July 23 export is still absent; Plan 02 is the implementation contract, but the deployed export must be checked before live rollout.
+- The committed July 23 export has been audited as compatible with Plan 02 and is covered by a schema contract test.
 
 ## Integration sequence
 
@@ -22,7 +22,7 @@ Plan 01 owns search/matching tests. Plan 02 owns SCF, taxonomy, and category pay
 3. Load that artifact through `apply-plan` with a fake WordPress client and verify the exact materialized REST bodies.
 4. Verify command-specific credential checks and that `fuzzy` requires Spotify credentials.
 5. Reconcile current Markdown documentation with the numbered plan sequence. Do not edit runtime-adjacent documentation outside the task scope until implementation work explicitly owns it.
-6. Only after the deployed SCF export comparison passes, generate and manually review a one-post real plan.
+6. Generate and manually review a one-post real plan.
 7. Apply that one post in a controlled manual rollout, inspect WordPress, then proceed to a small batch and finally the library.
 
 ## Cross-feature integration tests
@@ -66,8 +66,8 @@ Plan 01 owns search/matching tests. Plan 02 owns SCF, taxonomy, and category pay
 At final integration, documentation must consistently state:
 
 - The root `plan.md` is superseded by Plans 00–04.
-- Plan 02's field list is the approved implementation contract pending real-export verification.
-- No schema JSON may be invented.
+- Plan 02's field list is the approved implementation contract, verified against the committed July 23 export.
+- The committed export is deployed schema evidence and remains covered by a contract test.
 - `out/planned.json` is the replay artifact; `out/planned_patches.json` is protected historical output.
 - Python 3.10+, sequential operation, single writer, targeted staging, and no live writes from automated tests are required.
 - Comments are reserved for non-obvious behavior and safety invariants.
@@ -76,9 +76,9 @@ Runtime behavior documentation (`README.md`, examples, schema meaning notes) is 
 
 ## Controlled rollout
 
-1. Obtain and compare the deployed SCF export with every Plan 02 field, type, repeater child, taxonomy REST base, and date format.
-2. Generate one plan without writes and manually inspect identity evidence, omitted keys, complete taxonomy fills, and preserved categories.
-3. Apply that one plan and verify SCF fields, all taxonomies, marker categories, and unrelated categories in WordPress.
+1. Generate one plan without writes and manually inspect identity evidence, omitted keys, complete taxonomy fills, and preserved categories.
+2. Apply that one plan and verify SCF fields, all taxonomies, marker categories, unrelated categories, and the effective release-type category ID in WordPress.
+3. Verify SCF's `default_to_current_date` behavior does not replace explicitly supplied release/listened dates.
 4. Exercise a deluxe/remastered release, collaboration, and no-tag Last.fm result.
 5. Apply a reviewed small batch.
 6. Back up WordPress using existing procedures before the complete library run.

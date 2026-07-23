@@ -8,9 +8,7 @@ The program remains a single-file Python CLI. Keep changes small, standard-libra
 
 ## Authoritative schema contract
 
-The referenced July 23 SCF export is not present in this repository. Do not infer or fabricate `scf-export-2026-07-23.json` (or any other schema JSON). For implementation and tests, the active fields and taxonomies listed in Plan 02 are the **approved implementation contract**.
-
-Before any live rollout, obtain the real deployed export and compare it with Plan 02: field names, field types, repeater children, REST exposure, taxonomy REST bases, and date formats must agree. A discrepancy blocks live application and requires the documentation/implementation contract to be reconciled first. The existing July 5 export is historical evidence, not authority for this overhaul.
+The deployed July 23 export is committed as `scf-export-2026-07-23.json` and has been audited against Plan 02. Its active field names/types, seven repeater children, `d/m/Y` date formats, SCF REST exposure, and the `artist`, `genre`, and `release_type` taxonomy registrations/default effective REST slugs are compatible. The existing July 5 export remains historical evidence, not authority for this overhaul.
 
 ## Cross-plan invariants
 
@@ -85,7 +83,7 @@ Do not add a framework, database, third-party matching library, async calls, pro
 
 Live application is prohibited until all of the following hold:
 
-1. The real deployed SCF export has been checked against Plan 02.
+1. The deployed July 23 SCF export remains covered by the schema contract test.
 2. Plans 01–03 feature tests and Plan 04 integration tests pass without live WordPress writes.
 3. A one-post plan has been manually reviewed and applied in a controlled rollout step.
 4. Category markers and unrelated categories, taxonomy fill-only behavior, exact release identity, and SCF values have been verified in WordPress.

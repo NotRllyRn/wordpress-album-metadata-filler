@@ -4,7 +4,7 @@
 
 Define the approved SCF and WordPress payload contract and stop writing fields that no longer exist.
 
-The referenced July 23 export is absent from this repository. The following list is therefore the **approved implementation contract**, not a claim that a file was inspected. Never create or fabricate schema JSON. Before live rollout, compare the real deployed export with every listed field name/type, repeater child, taxonomy REST base, and date format; any mismatch blocks rollout until reconciled.
+The deployed July 23 export is committed as `scf-export-2026-07-23.json` and was audited against this contract. Its active field names/types, seven repeater children, `d/m/Y` date formats, SCF REST exposure, and the three taxonomy registrations/default effective REST slugs are compatible.
 
 The approved active metadata fields are:
 
@@ -460,4 +460,4 @@ No `music_mood_tags` key should be present.
 
 ## Schema source and rollout condition
 
-No `scf-export-2026-07-23.json` is present. This document's explicit lists are approved for implementation and fixture tests. The real deployed export remains mandatory rollout evidence and must not be fabricated.
+`scf-export-2026-07-23.json` is the deployed schema evidence. The automated schema contract test records its compatibility; rollout still requires manual one-post verification of category IDs and SCF's `default_to_current_date` behavior.

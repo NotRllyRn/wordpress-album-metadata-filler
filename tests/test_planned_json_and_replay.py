@@ -55,6 +55,20 @@ class PlannedReplayTests(unittest.TestCase):
         for offset, limit in ((-1, None), (0, -1)):
             with self.assertRaises(ValueError): mod.slice_items([], offset, limit)
 
+    def test_replay_dates_require_calendar_valid_dmy_values(self):
+        for field in ("music_release_date", "music_listened_at"):
+            for value in ("29/02/2024", "31/12/2026"):
+                row = patch_row()
+                row["write"] = {"acf": {field: value}}
+                with self.subTest(field=field, value=value):
+                    mod.validate_plan(plan(row))
+            for value in ("2026-12-31", "31/02/2026", "1/12/2026", "not-a-date"):
+                row = patch_row()
+                row["write"] = {"acf": {field: value}}
+                with self.subTest(field=field, value=value), self.assertRaisesRegex(
+                        ValueError, r"valid dd/mm/YYYY date"):
+                    mod.validate_plan(plan(row))
+
     def test_tracks_and_materialization_preserve_absent_replacements(self):
         row = patch_row(); row["write"] = {"acf": {"music_tracks": [{
             "disc_number": 1, "track_number": 1, "title": "Song", "duration_ms": 1,
