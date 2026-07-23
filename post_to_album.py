@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import base64
 import difflib
+import html
 import json
 import logging
 import os
@@ -20,8 +21,8 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import unicodedata
 from collections import OrderedDict
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
@@ -75,26 +76,28 @@ LFM_BLOCKLIST = (
 # Tiny utilities
 # --------------------------------------------------------------------------- #
 
-def _strip_diacritics(s: str) -> str:
-    import unicodedata
-    nfkd = unicodedata.normalize("NFKD", s)
-    return "".join(c for c in nfkd if not unicodedata.combining(c))
+def raw_query(value: str) -> str:
+    """Prepare a provider query without erasing release identity."""
+    return html.unescape(value or "").strip()
 
 
+def match_key(value: str) -> str:
+    """Minimal normalization used for comparisons only, never for writes."""
+    return " ".join(unicodedata.normalize("NFC", html.unescape(value or "")).casefold().split())
+
+
+def similarity(a: str, b: str) -> float:
+    return difflib.SequenceMatcher(None, match_key(a), match_key(b)).ratio()
+
+
+# Kept as aliases for callers of the old debug helpers; they are no longer
+# destructive and must not be used to prepare stored values.
 def _norm_title(s: str) -> str:
-    import html as _html
-    s = _html.unescape(s or "").lower()
-    s = _strip_diacritics(s)
-    s = re.sub(r"\(\s*(explicit|clean|remaster(ed)?|deluxe|anniversary|special edition|mono|stereo|remix)\s*\)", "", s)
-    s = re.sub(r"\[\s*(explicit|clean|remaster(ed)?|deluxe|anniversary|special edition)\s*\]", "", s)
-    s = re.sub(r"\s*[-–—]\s*(single|ep|album|deluxe|remaster(ed)?|remix|version|edit)(.*)$", "", s)
-    s = re.sub(r"[·•]", " ", s)
-    s = re.sub(r"\s+", " ", s).strip()
-    return s
+    return match_key(s)
 
 
 def _norm_artist(s: str) -> str:
-    return _strip_diacritics((s or "").strip()).lower()
+    return match_key(s)
 
 
 def _post_dmy(date_iso: str) -> str:
@@ -213,42 +216,71 @@ class Spotify:
 # Candidate ranking
 # --------------------------------------------------------------------------- #
 
+SPOTIFY_MIN_TITLE = 0.80
+SPOTIFY_MIN_ARTIST = 0.70
+SPOTIFY_MIN_SCORE = 0.82
+SPOTIFY_MAX_TIE_GAP = 0.05
+
+
+def spotify_candidate_score(cand: dict, q_title: str, q_artists: list[str]) -> dict:
+    title_score = similarity(q_title, cand.get("name", ""))
+    candidate_artists = [a.get("name", "") for a in cand.get("artists", [])]
+    # Collaborations make "primary artist only" unsafe: compare every supplied
+    # artist with every credited candidate artist and retain the best evidence.
+    artist_score = max(
+        (similarity(wp_artist, candidate_artist)
+         for wp_artist in q_artists for candidate_artist in candidate_artists),
+        default=0.0,
+    )
+    return {"score": 0.65 * title_score + 0.35 * artist_score,
+            "title_score": title_score, "artist_score": artist_score,
+            "candidate": cand}
+
+
 def _score(cand: dict, q_title: str, q_artists: list[str]) -> float:
-    c_title = _norm_title(cand.get("name", ""))
-    c_artists = [_norm_artist(a.get("name", "")) for a in cand.get("artists", [])]
-    title_sim = difflib.SequenceMatcher(a=q_title, b=c_title).ratio() if q_title else 0.0
-    artist_sim = 0.0
-    if q_artists and c_artists:
-        # best match among c_artists for q_artists[0] (primary tag)
-        primary = q_artists[0]
-        artist_sim = max((difflib.SequenceMatcher(a=primary, b=ca).ratio() for ca in c_artists), default=0.0)
-    return 0.6 * title_sim + 0.4 * artist_sim
+    return spotify_candidate_score(cand, q_title, q_artists)["score"]
 
 
-def search_ladder(spt: Spotify, q_title: str, q_artists: list[str]) -> list[dict]:
-    """Three-rung ladder: free-text → quoted-field-and-artist → title-only."""
-    free  = " ".join([q_title] + q_artists)
+def search_ladder(spt: Any, q_title: str, q_artists: list[str]) -> list[dict]:
+    """Search strongest intent first; provider failures deliberately propagate."""
     quoted = f'album:"{q_title}"' + (f' artist:"{q_artists[0]}"' if q_artists else "")
+    free = " ".join([q_title] + q_artists)
     seen: "OrderedDict[str, dict]" = OrderedDict()
-    for q in (free, quoted, q_title):
-        if not q or not q.strip():
+    for q in (quoted, free, q_title):
+        if not q.strip():
             continue
-        try:
-            for c in spt.search_albums(q, limit=10):
-                seen.setdefault(c["id"], c)
-        except urllib.error.HTTPError as exc:
-            log.warning("Spotify search `%s` -> HTTP %d", q[:60], exc.code)
+        for candidate in spt.search_albums(q, limit=10):
+            candidate_id = candidate.get("id")
+            if candidate_id:
+                seen.setdefault(candidate_id, candidate)
     return list(seen.values())
 
 
+def choose_spotify_candidate(spt_results: list[dict], q_title: str,
+                             q_artists: list[str]) -> dict:
+    if not q_artists:
+        # A good title is not identity evidence for common album names.
+        return {"candidate": None, "reason": "spotify_missing_artist"}
+    passing = []
+    for candidate in spt_results:
+        row = spotify_candidate_score(candidate, q_title, q_artists)
+        if (row["title_score"] >= SPOTIFY_MIN_TITLE and
+                row["artist_score"] >= SPOTIFY_MIN_ARTIST and
+                row["score"] >= SPOTIFY_MIN_SCORE):
+            passing.append(row)
+    passing.sort(key=lambda row: row["score"], reverse=True)
+    if not passing:
+        return {"candidate": None,
+                "reason": "spotify_no_results" if not spt_results else "spotify_low_confidence"}
+    if len(passing) > 1 and passing[0]["score"] - passing[1]["score"] < SPOTIFY_MAX_TIE_GAP:
+        return {"candidate": None, "reason": "spotify_ambiguous",
+                "scores": passing[:2]}
+    return {**passing[0], "reason": "spotify_match"}
+
+
 def best_candidate(spt_results: list[dict], q_title: str, q_artists: list[str]) -> dict | None:
-    if not spt_results:
-        return None
-    scored = sorted(
-        ((_score(c, q_title, q_artists), c) for c in spt_results),
-        key=lambda x: x[0], reverse=True,
-    )
-    return scored[0][1] if scored[0][0] >= 0.35 else None
+    """Compatibility wrapper returning only the accepted Spotify object."""
+    return choose_spotify_candidate(spt_results, q_title, q_artists).get("candidate")
 
 
 # --------------------------------------------------------------------------- #
@@ -262,16 +294,144 @@ class LastFM:
     def __init__(self, api_key: str):
         self._key = api_key
 
-    def album_getinfo(self, artist: str, album: str) -> dict:
-        params = {"method": "album.getinfo", "format": "json",
-                  "api_key": self._key, "artist": artist, "album": album, "autocorrect": "1"}
-        url = f"{LASTFM_BASE}?{urllib.parse.urlencode(params)}"
-        try:
-            with urllib.request.urlopen(url, timeout=30) as r:
-                return json.loads(r.read()).get("album") or {}
-        except urllib.error.HTTPError as exc:
-            log.warning("Last.fm getinfo failed for %s - %s : HTTP %d", artist, album, exc.code)
-            return {}
+    def _get(self, method: str, **params) -> dict:
+        params.update({"method": method, "api_key": self._key, "format": "json"})
+        req = urllib.request.Request(
+            f"{LASTFM_BASE}?{urllib.parse.urlencode(params)}",
+            headers={"User-Agent": "wordpress-album-metadata-filler/1.0"},
+        )
+        with urllib.request.urlopen(req, timeout=30) as response:
+            try:
+                data = json.loads(response.read())
+            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                raise RuntimeError("Last.fm malformed JSON response") from exc
+        if not isinstance(data, dict):
+            raise RuntimeError("Last.fm malformed response")
+        if data.get("error") is not None:
+            raise RuntimeError(f"Last.fm {data['error']}: {data.get('message', 'unknown error')}")
+        return data
+
+    def album_search(self, album: str, limit: int = 10) -> list[dict]:
+        data = self._get("album.search", album=album, limit=limit)
+        results = data.get("results")
+        if not isinstance(results, dict) or not isinstance(results.get("albummatches"), dict):
+            raise RuntimeError("Last.fm malformed album.search response")
+        matches = results["albummatches"].get("album", [])
+        if not matches:
+            return []
+        if isinstance(matches, dict):
+            return [matches]
+        if isinstance(matches, list) and all(isinstance(item, dict) for item in matches):
+            return matches
+        raise RuntimeError("Last.fm malformed album.search matches")
+
+    def album_getinfo(self, artist: str | None = None, album: str | None = None,
+                      mbid: str | None = None, autocorrect: int = 0) -> dict:
+        if not mbid and not (artist and album):
+            raise ValueError("album_getinfo requires mbid or artist and album")
+        params = {"mbid": mbid} if mbid else {
+            "artist": artist, "album": album, "autocorrect": autocorrect}
+        data = self._get("album.getinfo", **params)
+        info = data.get("album")
+        if not isinstance(info, dict):
+            raise RuntimeError("Last.fm malformed album.getinfo response")
+        return info
+
+
+LASTFM_MIN_TITLE = 0.85
+LASTFM_MIN_ARTIST = 0.75
+LASTFM_MIN_SCORE = 0.85
+LASTFM_MAX_TIE_GAP = 0.03
+_UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$")
+
+
+def lastfm_candidate_score(spotify_album: dict, candidate: dict) -> dict:
+    title_score = similarity(spotify_album.get("name", ""), candidate.get("name", ""))
+    artist_score = max((similarity(a.get("name", ""), candidate.get("artist", ""))
+                        for a in spotify_album.get("artists", [])), default=0.0)
+    return {"score": 0.70 * title_score + 0.30 * artist_score,
+            "title_score": title_score, "artist_score": artist_score,
+            "candidate": candidate}
+
+
+def choose_lastfm_candidate(spotify_album: dict, candidates: list[dict]) -> dict:
+    spotify_artists = spotify_album.get("artists", [])
+    if not spotify_artists:
+        return {"candidate": None, "reason": "lastfm_missing_artist"}
+    exact = [c for c in candidates
+             if match_key(c.get("name", "")) == match_key(spotify_album.get("name", ""))
+             and any(match_key(c.get("artist", "")) == match_key(a.get("name", ""))
+                     for a in spotify_artists)]
+    if len(exact) == 1:
+        return {**lastfm_candidate_score(spotify_album, exact[0]), "reason": "lastfm_exact"}
+    if len(exact) > 1:
+        # Only a single syntactically valid, unique MBID can safely distinguish
+        # duplicate exact search rows; result order is not identity evidence.
+        usable = [c for c in exact if _UUID_RE.fullmatch(str(c.get("mbid", "")))]
+        mbids = [c["mbid"].casefold() for c in usable]
+        unique = [c for c in usable if mbids.count(c["mbid"].casefold()) == 1]
+        if len(unique) == 1:
+            return {**lastfm_candidate_score(spotify_album, unique[0]),
+                    "reason": "lastfm_exact_mbid"}
+        return {"candidate": None, "reason": "lastfm_ambiguous_exact"}
+    passing = []
+    for candidate in candidates:
+        row = lastfm_candidate_score(spotify_album, candidate)
+        if (row["title_score"] >= LASTFM_MIN_TITLE and
+                row["artist_score"] >= LASTFM_MIN_ARTIST and
+                row["score"] >= LASTFM_MIN_SCORE):
+            passing.append(row)
+    passing.sort(key=lambda row: row["score"], reverse=True)
+    if not passing:
+        return {"candidate": None,
+                "reason": "lastfm_no_results" if not candidates else "lastfm_low_confidence"}
+    if len(passing) > 1 and passing[0]["score"] - passing[1]["score"] < LASTFM_MAX_TIE_GAP:
+        return {"candidate": None, "reason": "lastfm_ambiguous", "scores": passing[:2]}
+    return {**passing[0], "reason": "lastfm_fuzzy"}
+
+
+def _track_list(root: Any) -> list[dict]:
+    if not root:
+        return []
+    if not isinstance(root, dict):
+        raise RuntimeError("Last.fm malformed tracks collection")
+    tracks = root.get("track", [])
+    if not tracks:
+        return []
+    if isinstance(tracks, dict):
+        return [tracks]
+    if isinstance(tracks, list) and all(isinstance(track, dict) for track in tracks):
+        return tracks
+    raise RuntimeError("Last.fm malformed track entry")
+
+
+def validate_lastfm_info(spotify_album: dict, spotify_tracks: list[dict],
+                         candidate: dict, info: dict) -> dict:
+    returned = {"name": info.get("name", ""), "artist": info.get("artist", "")}
+    spotify_score = lastfm_candidate_score(spotify_album, returned)
+    candidate_title = similarity(info.get("name", ""), candidate.get("name", ""))
+    candidate_artist = similarity(info.get("artist", ""), candidate.get("artist", ""))
+    if (spotify_score["title_score"] < LASTFM_MIN_TITLE or
+            spotify_score["artist_score"] < LASTFM_MIN_ARTIST or
+            candidate_title < LASTFM_MIN_TITLE or candidate_artist < LASTFM_MIN_ARTIST):
+        return {"accepted": False, "reason": "lastfm_identity_changed"}
+    lastfm_keys = []
+    for track in _track_list(info.get("tracks")):
+        track_name = track.get("name") or track.get("title") or ""
+        if not isinstance(track_name, str):
+            raise RuntimeError("Last.fm malformed track name")
+        key = match_key(track_name)
+        if key:
+            lastfm_keys.append(key)
+    if not lastfm_keys:
+        return {"accepted": True, "reason": "lastfm_identity_no_tracks"}
+    spotify_keys = {match_key(t.get("name", "")) for t in spotify_tracks if t.get("name")}
+    overlap = len(spotify_keys & set(lastfm_keys)) / max(1, min(len(spotify_keys), len(set(lastfm_keys))))
+    # Tracks are optional, but once supplied a sub-.60 overlap is affirmative
+    # contradictory evidence rather than merely missing confirmation.
+    if overlap < 0.60:
+        return {"accepted": False, "reason": "lastfm_track_contradiction", "overlap": overlap}
+    return {"accepted": True, "reason": "lastfm_validated", "overlap": overlap}
 
 
 def pick_top_tags(album_info: dict, max_n: int, blocklist: Iterable[str]) -> list[str]:
@@ -282,9 +442,10 @@ def pick_top_tags(album_info: dict, max_n: int, blocklist: Iterable[str]) -> lis
          {'tag': {name:'…'}}      (single tag — dict, not list!)
     Last.fm may also return tags as bare strings.
     """
-    tags = (album_info or {}).get("tags", "") or {}
+    tags = ((album_info or {}).get("toptags") or
+            (album_info or {}).get("tags") or {})
     raw = tags.get("tag", []) if isinstance(tags, dict) else []
-    if isinstance(raw, dict):
+    if isinstance(raw, (dict, str)):
         raw = [raw]
     elif not isinstance(raw, list):
         raw = []
@@ -487,10 +648,10 @@ def _set_if_empty(acf_in: dict, acf_out: dict, key: str, value: Any) -> None:
 # Per-post enrichment
 # --------------------------------------------------------------------------- #
 
-def enrich(post: dict, spt: Spotify, lfm: LastFM,
+def enrich(post: dict, spt: Any, lfm: Any,
            tag_id_to_name: dict[int, str],
            tax_term_cache: dict[str, dict[str, int]],
-           wp: WordPress) -> dict | None:
+           wp: Any) -> dict | None:
     """Return a PATCH body for the post or None when no work is needed."""
     pid  = post["id"]
     acf_in = post.get("acf") or {}
@@ -502,31 +663,54 @@ def enrich(post: dict, spt: Spotify, lfm: LastFM,
         log.debug("SKIP post %d '%s' (fully filled)", pid, title)
         return None
 
-    q_title = _norm_title(title)
-    q_artists = [_norm_artist(a) for a in tag_names]
+    q_title = raw_query(title)
+    q_artists = [raw_query(a) for a in tag_names if raw_query(a)]
     log.debug("post %d :: title=%r artists=%r date=%s",
               pid, title, tag_names, post_date)
 
-    cands = search_ladder(spt, q_title, q_artists)
-    if not cands:
-        log.warning("post %d -- no Spotify match for %r / %s. See unresolved.json.",
-                    pid, title, tag_names[:3])
-        return {"__unresolved__": True, "candidates": []}
-    winner = best_candidate(cands, q_title, q_artists)
+    if not q_artists:
+        return {"__unresolved__": True, "reason": "spotify_missing_artist",
+                "details": {}, "candidates": []}
+    try:
+        cands = search_ladder(spt, q_title, q_artists)
+    except (OSError, RuntimeError, ValueError) as exc:
+        return {"__unresolved__": True, "reason": "spotify_provider_error",
+                "details": {"error": str(exc)}, "candidates": []}
+    spotify_match = choose_spotify_candidate(cands, q_title, q_artists)
+    winner = spotify_match.get("candidate")
     if winner is None:
-        log.warning("post %d -- no good Spotify match for %r / %s. See unresolved.json.",
-                    pid, title, tag_names[:3])
-        return {"__unresolved__": True, "candidates": cands[:5]}
+        return {"__unresolved__": True, "reason": spotify_match["reason"],
+                "details": {k: spotify_match[k] for k in ("score", "title_score", "artist_score")
+                            if k in spotify_match}, "candidates": cands[:5]}
 
     log.info("post %d '%s' -> Spotify %s '%s' (%d tracks)",
              pid, title, winner["id"], winner["name"], winner.get("total_tracks", 0))
 
-    album   = spt.album(winner["id"])
-    tracks  = spt.all_tracks(winner["id"])
-
-    primary_artist = (album.get("artists") or [{}])[0].get("name") or tag_names[0]
-    info          = lfm.album_getinfo(primary_artist, album["name"])
-    lfm_tags      = pick_top_tags(info, max_n=3, blocklist=LFM_BLOCKLIST)
+    try:
+        album = spt.album(winner["id"])
+        tracks = spt.all_tracks(winner["id"])
+        lfm_candidates = lfm.album_search(album["name"], limit=10)
+    except (OSError, RuntimeError, ValueError, KeyError) as exc:
+        return {"__unresolved__": True, "reason": "provider_error",
+                "details": {"error": str(exc)}, "candidates": []}
+    lastfm_match = choose_lastfm_candidate(album, lfm_candidates)
+    selected = lastfm_match.get("candidate")
+    if selected is None:
+        return {"__unresolved__": True, "reason": lastfm_match["reason"],
+                "details": {}, "candidates": lfm_candidates[:5]}
+    try:
+        mbid = selected.get("mbid")
+        info = (lfm.album_getinfo(mbid=mbid) if mbid else
+                lfm.album_getinfo(artist=selected.get("artist"),
+                                  album=selected.get("name"), autocorrect=0))
+        validation = validate_lastfm_info(album, tracks, selected, info)
+    except (OSError, RuntimeError, ValueError) as exc:
+        return {"__unresolved__": True, "reason": "lastfm_provider_error",
+                "details": {"error": str(exc)}, "candidates": []}
+    if not validation["accepted"]:
+        return {"__unresolved__": True, "reason": validation["reason"],
+                "details": validation, "candidates": [selected]}
+    lfm_tags = pick_top_tags(info, max_n=3, blocklist=LFM_BLOCKLIST)
     if not lfm_tags:
         log.warning("post %d — no useful Last.fm tags for %s; leaving mood empty",
                     pid, album["name"])
@@ -666,7 +850,8 @@ def cmd_run(args, env) -> int:
         if body.get("__unresolved__"):
             unresolved.append({
                 "post_id": post["id"], "title": post["title"]["rendered"],
-                "tags": post.get("tags", []), "candidates": body["candidates"],
+                "tags": post.get("tags", []), "reason": body.get("reason", "unresolved"),
+                "details": body.get("details", {}), "candidates": body["candidates"],
             })
             continue
 
@@ -725,14 +910,17 @@ def cmd_stats(args, env) -> int:
 
 def cmd_fuzzy(args, env) -> int:
     spt = Spotify(env["SPOTIFY_CLIENT_ID"], env["SPOTIFY_CLIENT_SECRET"])
-    q_title = _norm_title(args.title)
-    q_artists = [_norm_artist(a) for a in args.artists]
+    q_title = raw_query(args.title)
+    q_artists = [raw_query(a) for a in args.artists if raw_query(a)]
     print(f"q_title={q_title!r}  q_artists={q_artists!r}")
     cands = search_ladder(spt, q_title, q_artists)
-    for c in cands:
-        score = _score(c, q_title, q_artists)
-        print(f"  score={score:.3f}  {c['id']}  {c['name']!r}  by {[a['name'] for a in c['artists']]}  ({c.get('total_tracks')} tracks, {c.get('release_date')})")
-    print(f"\nTop pick: {best_candidate(cands, q_title, q_artists) or 'no winner'}")
+    for candidate in cands:
+        row = spotify_candidate_score(candidate, q_title, q_artists)
+        print(f"  score={row['score']:.3f} title={row['title_score']:.3f} "
+              f"artist={row['artist_score']:.3f}  {candidate['id']}  "
+              f"{candidate['name']!r}  by {[a['name'] for a in candidate.get('artists', [])]}")
+    result = choose_spotify_candidate(cands, q_title, q_artists)
+    print(f"\nResult: {result['reason']}; top pick: {result.get('candidate') or 'no winner'}")
     return 0
 
 
