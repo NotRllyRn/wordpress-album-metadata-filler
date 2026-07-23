@@ -839,7 +839,7 @@ def enrich(post: dict, spt: Any, lfm: Any,
 
     # Rebuilding provider-owned rows must not reset the editor-owned highlight.
     highlights = {row.get("spotify_id"): bool(row.get("highlight"))
-                  for row in acf_in.get("music_tracks", [])
+                  for row in (acf_in.get("music_tracks") or [])
                   if isinstance(row, dict) and row.get("spotify_id")}
     track_rows = [
         {"disc_number":  t.get("disc_number", 1),

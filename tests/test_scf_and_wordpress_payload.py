@@ -96,6 +96,11 @@ class PayloadTests(unittest.TestCase):
         self.assertEqual(body["taxonomies"]["genre"], ["Rock", "Pop", "Ambient"])
         self.assertEqual(body["taxonomies"]["release_type"], ["Single"])
 
+    def test_null_destination_tracks_are_rebuilt_without_highlights(self):
+        rows = enrich(make_post(acf={"music_tracks": None}))["acf"]["music_tracks"]
+        self.assertEqual([row["spotify_id"] for row in rows], ["one", "two"])
+        self.assertEqual([row["highlight"] for row in rows], [False, False])
+
     def test_rebuilt_tracks_preserve_highlight_by_spotify_id(self):
         post = make_post(acf={"music_tracks": [
             {"spotify_id": "one", "highlight": True}]})
