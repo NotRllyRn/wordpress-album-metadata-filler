@@ -39,6 +39,50 @@ class SearchAndMatchingTests(unittest.TestCase):
         with self.assertRaises(urllib.error.URLError):
             mod.search_ladder(Fake(), "Album", ["Artist"])
 
+    def test_spotify_rejects_malformed_token_and_api_shapes(self):
+        class Response:
+            def __init__(self, value): self.value = value
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def read(self): return json.dumps(self.value).encode()
+
+        for payload in ([], {}, {"access_token": ""}, {"access_token": 7}):
+            with self.subTest(payload=payload), patch(
+                    "urllib.request.urlopen", return_value=Response(payload)):
+                with self.assertRaises(mod.SpotifyProviderError):
+                    mod.Spotify("id", "secret")._ensure_token()
+
+        spotify = mod.Spotify("id", "secret")
+        spotify._tok, spotify._exp = "token", float("inf")
+        with patch("urllib.request.urlopen", return_value=Response([])):
+            with self.assertRaisesRegex(mod.SpotifyProviderError, "malformed"):
+                spotify._get("https://example.test")
+
+    def test_spotify_search_distinguishes_empty_from_malformed_shapes(self):
+        spotify = mod.Spotify("id", "secret")
+        spotify._get = lambda url: {"albums": {"items": []}}
+        self.assertEqual(spotify.search_albums("Album"), [])
+
+        malformed = [
+            {}, {"albums": []}, {"albums": {}},
+            {"albums": {"items": {}}},
+            {"albums": {"items": ["bad"]}},
+            {"albums": {"items": [{"id": "x", "name": "Album", "artists": ["bad"]}]}},
+        ]
+        for payload in malformed:
+            with self.subTest(payload=payload):
+                spotify._get = lambda url, value=payload: value
+                with self.assertRaises(mod.SpotifyProviderError):
+                    spotify.search_albums("Album")
+
+    def test_enrich_maps_malformed_spotify_search_to_provider_error(self):
+        spotify = mod.Spotify("id", "secret")
+        spotify._get = lambda url: {"albums": {"items": ["bad"]}}
+        post = {"id": 1, "title": {"rendered": "Album"}, "date": "2020-01-01",
+                "tags": [7], "acf": {}}
+        result = cast(dict, mod.enrich(post, spotify, object(), {7: "Artist"}))
+        self.assertEqual(result["diagnostics"][0]["code"], "spotify_provider_error")
+
     def test_inclusive_provider_score_gates(self):
         spotify_candidate = {"id": "s", "name": "x", "artists": [{"name": "y"}]}
         lastfm_candidate = {"name": "x", "artist": "y"}

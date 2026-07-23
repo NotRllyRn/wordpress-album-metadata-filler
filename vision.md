@@ -1,5 +1,7 @@
 # Vision
 
+> **Historical context:** This is the original project brief and is preserved as written. Plans 00–04 are the current canonical behavior and schema contract.
+
 This repository is just a cli python tool that lets the user connect to their wordpress data base and fill out scf data on each blog post.
 
 Basically every blog post on this webiste is an album. The title is the album name canonically and stripped for illegal wordpress characters. The tags are every artist for that album, the category is used for the type of release; such as album, single, EP, or compilation.

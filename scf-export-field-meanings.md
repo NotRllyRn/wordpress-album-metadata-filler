@@ -1,24 +1,27 @@
-I deleted a bunch of fields we didn't need and added some new ones we needed since the last export and cleaned some stuff up. look at the scf-export json file in this directory for exact fields. This is an index of what each field is supposed to mean
+# SCF field meanings
 
-music tracks: all the sub fields that are each music track on the release.
-- disc number: what disc number the song is on
-- track number: the track number the song is on
-- title: song title
-- duration_ms: duration in ms
-- spotify_id: the specific song spotify ID
-- highlight: whether or not I thought the song deserved a highlight aka I liked it much more than the other songs.
-- explicit: whether or not the song is explicit.
-music_rating: my music rating from 0 to 100
-music_favorite: whether or not it was a favorite album of mine
-music_length_ms: the total album length (added from music track total duration)
-spotify_album_id the specific spotify id for this album
-spotify_album_url: the url to the album on spotify
-music_release_date: when that album was released canonically.
-music_listened_at: when I listened to the album (copy from when the blog post was posted)
-lastfm_release_id: the id of the album on last fm
-music_total_tracks: the total # of tracks on this release
-music_avg_track_ms: average track duration
-music_explicit: are any songs marked explicit? if so then this should be marked true
-music_mood_tags: basically the same thing as the top three tags on last fm.
-unreleased: whether or not this release is unreleased from an artist.
-listen-count-index: the number index of how many times this release has been listened too. Basically this will be 1 for most released except for the ones where I listened to an album twice, where the 2nd blog post would have this number at 2 instead. 
+> **Historical export warning:** `scf-export-2026-07-05.json` predates the approved schema and must not be treated as deployed truth. The real July 23 export is absent. Plan 02 is the current implementation contract, but live rollout is blocked until the deployed export is compared field-by-field; do not fabricate schema JSON.
+
+## Current Plan 02 contract
+
+Provider-owned fields are filled only when empty:
+
+- `spotify_title`: exact raw canonical title from the selected full Spotify album object; accents, punctuation, and edition suffixes are preserved.
+- `music_tracks`: complete imported track rows. Children are `disc_number`, `track_number`, `title`, `duration_ms`, `spotify_id`, `highlight`, and `explicit`. Re-import preserves an existing highlight by Spotify track ID.
+- `music_length_ms`: sum of imported track durations.
+- `music_avg_track_ms`: average duration using total tracks.
+- `music_total_tracks`: Spotify album total (or imported row count fallback).
+- `music_explicit`: true when any imported track is explicit.
+- `spotify_album_id`, `spotify_album_url`: selected Spotify album identity and URL.
+- `music_release_date`: canonical Spotify release date formatted for SCF.
+- `music_listened_at`: WordPress post date formatted for SCF.
+- `lastfm_release_id`: MusicBrainz ID returned by the validated Last.fm `album.getInfo` result. It is omitted and diagnosed when absent; search-result MBID is used to prefer the getInfo lookup, not blindly stored.
+- `listen_count`: defaults to integer `1` when empty.
+
+Editor-owned active fields are never auto-filled: `music_rating`, `music_favorite`, and `music_notes`.
+
+Filtered Last.fm tags populate only the `genre` taxonomy. `artist` and `genre` are fill-only; `release_type` contains exactly one computed release type. The removed `music_mood_tags`, `unreleased`, and `listen-count` fields are not active and must not appear in new writes.
+
+## Historical July 5 notes
+
+The historical export described track rows, rating/favorite fields, duration and Spotify identity, listened/release dates, Last.fm identity, track totals, explicitness, mood tags, unreleased status, and a listen-count index. Those notes explain older data only. In particular, `music_mood_tags`, `unreleased`, and the older listen-count naming were removed or replaced by the current contract above.

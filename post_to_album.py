@@ -177,6 +177,10 @@ SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token"
 SPOTIFY_API       = "https://api.spotify.com/v1"
 
 
+class SpotifyProviderError(RuntimeError):
+    pass
+
+
 class Spotify:
     def __init__(self, client_id: str, client_secret: str):
         self._id = client_id
@@ -195,9 +199,21 @@ class Spotify:
                      "Content-Type": "application/x-www-form-urlencoded"},
         )
         with urllib.request.urlopen(req, timeout=30) as r:
-            j = json.loads(r.read())
-        self._tok = j["access_token"]
-        self._exp = time.time() + float(j.get("expires_in", 3600))
+            try:
+                j = json.loads(r.read())
+            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                raise SpotifyProviderError("Spotify token response contained malformed JSON") from exc
+        if not isinstance(j, dict):
+            raise SpotifyProviderError("Spotify token response was malformed")
+        token = j.get("access_token")
+        if not isinstance(token, str) or not token:
+            raise SpotifyProviderError("Spotify token response lacked a valid access_token")
+        try:
+            expires_in = float(j.get("expires_in", 3600))
+        except (TypeError, ValueError) as exc:
+            raise SpotifyProviderError("Spotify token response had invalid expires_in") from exc
+        self._tok = token
+        self._exp = time.time() + expires_in
         return self._tok
 
     def _get(self, url: str) -> Any:
@@ -206,7 +222,14 @@ class Spotify:
             req = urllib.request.Request(url, headers={"Authorization": f"Bearer {tok}"})
             try:
                 with urllib.request.urlopen(req, timeout=30) as r:
-                    return json.loads(r.read())
+                    try:
+                        data = json.loads(r.read())
+                    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                        raise SpotifyProviderError(
+                            "Spotify API response contained malformed JSON") from exc
+                if not isinstance(data, dict):
+                    raise SpotifyProviderError("Spotify API response was malformed")
+                return data
             except urllib.error.HTTPError as exc:
                 if exc.code == 401 and attempt == 0:
                     self._exp = 0  # force refresh
@@ -221,7 +244,22 @@ class Spotify:
 
     def search_albums(self, q: str, limit: int = 10) -> list[dict]:
         url = f"{SPOTIFY_API}/search?q={urllib.parse.quote(q)}&type=album&limit={limit}&market=US"
-        return self._get(url).get("albums", {}).get("items", [])
+        data = self._get(url)
+        albums = data.get("albums")
+        if not isinstance(albums, dict) or not isinstance(albums.get("items"), list):
+            # A malformed provider payload is not the same as a valid empty result set.
+            raise SpotifyProviderError("Spotify search response was malformed")
+        items = albums["items"]
+        for candidate in items:
+            if (not isinstance(candidate, dict) or
+                    not isinstance(candidate.get("id"), str) or not candidate["id"] or
+                    not isinstance(candidate.get("name"), str) or
+                    not isinstance(candidate.get("artists"), list) or
+                    any(not isinstance(artist, dict) or
+                        not isinstance(artist.get("name"), str)
+                        for artist in candidate["artists"])):
+                raise SpotifyProviderError("Spotify search candidate was malformed")
+        return items
 
     def album(self, aid: str) -> dict:
         return self._get(f"{SPOTIFY_API}/albums/{urllib.parse.quote(aid)}?market=US")

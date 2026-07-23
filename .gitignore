@@ -219,3 +219,8 @@ __marimo__/
 
 # macOS
 .DS_Store
+
+# Current generated workflow artifacts (historical planned_patches.json is tracked)
+/out/planned.json
+/out/unresolved.json
+/out/applied.json

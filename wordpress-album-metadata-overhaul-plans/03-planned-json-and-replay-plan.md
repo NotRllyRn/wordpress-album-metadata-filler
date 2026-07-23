@@ -355,9 +355,9 @@ The current loader warns about all provider credentials for every command. Chang
 ### `run` requires
 
 ```text
-WP_BASE_URL
-WP_USERNAME
-WP_APP_PASSWORD
+WORDPRESS_BASE_URL
+WORDPRESS_USERNAME
+WORDPRESS_APP_PASSWORD
 SPOTIFY_CLIENT_ID
 SPOTIFY_CLIENT_SECRET
 LASTFM_API_KEY
@@ -366,9 +366,9 @@ LASTFM_API_KEY
 ### `apply-plan` requires only
 
 ```text
-WP_BASE_URL
-WP_USERNAME
-WP_APP_PASSWORD
+WORDPRESS_BASE_URL
+WORDPRESS_USERNAME
+WORDPRESS_APP_PASSWORD
 ```
 
 ### `fuzzy` requires
@@ -380,7 +380,13 @@ SPOTIFY_CLIENT_SECRET
 
 The command performs Spotify search and therefore cannot be credential-free.
 
-### `stats` may require only WordPress credentials
+### `stats` requires only WordPress credentials
+
+```text
+WORDPRESS_BASE_URL
+WORDPRESS_USERNAME
+WORDPRESS_APP_PASSWORD
+```
 
 Implement with one small helper:
 
@@ -407,7 +413,7 @@ Replace references to `planned_patches.json` in current documentation and code.
 
 Both modes should use the same plan structure:
 
-- Dry run writes `out/planned.json` only.
+- Dry run atomically writes versioned `out/planned.json` and versioned `out/unresolved.json`.
 - `run --apply`, if retained for backward compatibility, may apply the same generated in-memory plan after writing it.
 - `apply-plan` loads that exact structure from disk.
 

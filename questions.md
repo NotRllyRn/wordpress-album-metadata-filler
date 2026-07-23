@@ -1,5 +1,7 @@
 # Questions — blocks before implementation begins
 
+> **Historical context:** This records pre-implementation discussion and may contain superseded names or proposals. Plans 00–04 are the current canonical contract.
+
 Everything in `plan.md` is now in sync with your answers to my first round. These are the new things I need to know before writing code. Each question is **explicit about what I'd do if you say nothing** so you can answer `yes-take-the-default` if you want.
 
 ---
