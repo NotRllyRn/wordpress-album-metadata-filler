@@ -39,6 +39,7 @@ log = logging.getLogger("post_to_album")
 
 # Auto-fillable SCF fields. Order matters only for cosmetic output.
 AUTO_FILLABLE_FIELDS = (
+    "spotify_title",
     "music_tracks",
     "music_length_ms",
     "spotify_album_id",
@@ -49,8 +50,7 @@ AUTO_FILLABLE_FIELDS = (
     "music_total_tracks",
     "music_avg_track_ms",
     "music_explicit",
-    "music_mood_tags",
-    "listen-count",
+    "listen_count",
 )
 
 # Category id map for the legacy WP category twin of release_type taxonomy.
@@ -434,7 +434,8 @@ def validate_lastfm_info(spotify_album: dict, spotify_tracks: list[dict],
     return {"accepted": True, "reason": "lastfm_validated", "overlap": overlap}
 
 
-def pick_top_tags(album_info: dict, max_n: int, blocklist: Iterable[str]) -> list[str]:
+def pick_top_tags(album_info: dict, max_n: int, blocklist: Iterable[str],
+                  artist_names: Iterable[str] = ()) -> list[str]:
     """Handles four return shapes:
          ''                       (no tags)
          {'tag': []}              (no tags)
@@ -449,7 +450,9 @@ def pick_top_tags(album_info: dict, max_n: int, blocklist: Iterable[str]) -> lis
         raw = [raw]
     elif not isinstance(raw, list):
         raw = []
-    pats = [re.compile(p) for p in blocklist]
+    pats = [re.compile(p, re.IGNORECASE) for p in blocklist]
+    artist_keys = {match_key(name) for name in artist_names}
+    seen: set[str] = set()
     out: list[str] = []
     for entry in raw:
         if isinstance(entry, str):
@@ -461,8 +464,10 @@ def pick_top_tags(album_info: dict, max_n: int, blocklist: Iterable[str]) -> lis
         name = name.strip()
         if not name:
             continue
-        if any(p.match(name) for p in pats):
+        key = match_key(name)
+        if any(p.match(name) for p in pats) or key in artist_keys or key in seen:
             continue
+        seen.add(key)
         out.append(name)
         if len(out) >= max_n:
             break
@@ -616,7 +621,7 @@ def is_field_present(field: str, v: Any) -> bool:
     """
     if v is None:
         return False
-    if field in ("music_explicit", "music_favorite", "unreleased"):
+    if field in ("music_explicit", "music_favorite"):
         return bool(v)
     if isinstance(v, bool):
         return bool(v)
@@ -634,13 +639,34 @@ def is_field_present(field: str, v: Any) -> bool:
 
 
 def is_fully_filled(acf: dict) -> bool:
-    return all(is_field_present(f, acf.get(f)) for f in AUTO_FILLABLE_FIELDS)
+    # False is a complete explicitness result, but remains fillable as an SCF default.
+    return all((f == "music_explicit" and isinstance(acf.get(f), bool)) or
+               is_field_present(f, acf.get(f))
+               for f in AUTO_FILLABLE_FIELDS)
+
+
+def post_is_complete(post: dict) -> bool:
+    acf = post.get("acf") or {}
+    return (is_fully_filled(acf) and bool(post.get("artist")) and
+            bool(post.get("release_type")))
+
+
+def _computed_value_valid(key: str, value: Any) -> bool:
+    """Provider absence is not a value, but computed false/zero can be."""
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value)
+    if isinstance(value, (list, dict)):
+        return bool(value)
+    if isinstance(value, bool):
+        return key == "music_explicit"
+    return isinstance(value, (int, float))
 
 
 def _set_if_empty(acf_in: dict, acf_out: dict, key: str, value: Any) -> None:
-    """Write `value` only if the existing value is empty AND the new value
-    is itself non-empty (so we never POST a '0' / '' / False / [] as filler)."""
-    if is_field_present(key, value) and not is_field_present(key, acf_in.get(key)):
+    if (_computed_value_valid(key, value) and
+            not is_field_present(key, acf_in.get(key))):
         acf_out[key] = value
 
 
@@ -659,7 +685,7 @@ def enrich(post: dict, spt: Any, lfm: Any,
     post_date = post["date"]
     tag_names = [tag_id_to_name.get(t, "") for t in post.get("tags", []) if t in tag_id_to_name]
 
-    if is_fully_filled(acf_in):
+    if post_is_complete(post):
         log.debug("SKIP post %d '%s' (fully filled)", pid, title)
         return None
 
@@ -710,18 +736,25 @@ def enrich(post: dict, spt: Any, lfm: Any,
     if not validation["accepted"]:
         return {"__unresolved__": True, "reason": validation["reason"],
                 "details": validation, "candidates": [selected]}
-    lfm_tags = pick_top_tags(info, max_n=3, blocklist=LFM_BLOCKLIST)
-    if not lfm_tags:
-        log.warning("post %d — no useful Last.fm tags for %s; leaving mood empty",
+    genre_names = pick_top_tags(
+        info, max_n=3, blocklist=LFM_BLOCKLIST,
+        artist_names=(a.get("name", "") for a in album.get("artists", [])),
+    )
+    if not genre_names:
+        log.warning("post %d — no useful Last.fm genre tags for %s; leaving genre unchanged",
                     pid, album["name"])
 
+    # Rebuilding provider-owned rows must not reset the editor-owned highlight.
+    highlights = {row.get("spotify_id"): bool(row.get("highlight"))
+                  for row in acf_in.get("music_tracks", [])
+                  if isinstance(row, dict) and row.get("spotify_id")}
     track_rows = [
         {"disc_number":  t.get("disc_number", 1),
          "track_number": t.get("track_number", 0),
          "title":        t["name"],
          "duration_ms":  t["duration_ms"],
          "spotify_id":   t["id"],
-         "highlight":    False,
+         "highlight":    highlights.get(t["id"], False),
          "explicit":     bool(t.get("explicit", False))}
         for t in tracks
     ]
@@ -731,6 +764,7 @@ def enrich(post: dict, spt: Any, lfm: Any,
     rt_term_slug = rt_term_name.lower()
 
     acf_out: dict[str, Any] = {}
+    _set_if_empty(acf_in, acf_out, "spotify_title", album.get("name"))
     if track_rows or not is_field_present("music_tracks", acf_in.get("music_tracks")):
         _set_if_empty(acf_in, acf_out, "music_tracks", track_rows if track_rows else None)
         if not track_rows:
@@ -745,33 +779,34 @@ def enrich(post: dict, spt: Any, lfm: Any,
     _set_if_empty(acf_in, acf_out, "music_avg_track_ms",
                   (length_ms // total) if total else 0)
     _set_if_empty(acf_in, acf_out, "music_explicit",     any(t["explicit"] for t in track_rows))
-    if lfm_tags:
-        _set_if_empty(acf_in, acf_out, "music_mood_tags", [{"mood": t} for t in lfm_tags])
-    else:
-        # leave absent from body — POST/PATCH semantics replace what's given,
-        # so omitting means "do not touch this field". Mood stays empty.
-        pass
-    _set_if_empty(acf_in, acf_out, "listen-count", 1)
+    _set_if_empty(acf_in, acf_out, "listen_count", 1)
 
-    # Term resolution (find-or-create)
-    artist_ids = [_ensure_term(wp, tax_term_cache, "artist",     name) or 0 for name in tag_names]
-    artist_ids = [i for i in artist_ids if i]
+    # Taxonomy REST arrays replace assignments: resolve only when fill is needed.
+    artist_ids = []
+    if not post.get("artist"):
+        artist_ids = [_ensure_term(wp, tax_term_cache, "artist", name) or 0
+                      for name in tag_names]
+        artist_ids = [i for i in artist_ids if i]
 
-    # genre only if LFM yielded something
-    if lfm_tags:
-        genre_ids = [_ensure_term(wp, tax_term_cache, "genre", t) or 0 for t in lfm_tags]
+    genre_ids = []
+    if not post.get("genre") and genre_names:
+        genre_ids = [_ensure_term(wp, tax_term_cache, "genre", name) or 0
+                     for name in genre_names]
         genre_ids = [i for i in genre_ids if i]
-    else:
-        genre_ids = []
 
     rt_id = _ensure_term(wp, tax_term_cache, "release_type", rt_term_name) or 0
+    if not rt_id:
+        return {"__unresolved__": True, "reason": "release_type_unresolved",
+                "details": {"release_type": rt_term_name}, "candidates": []}
     cat_id = CATEGORY_MAP.get(rt_term_name)
 
     body: dict[str, Any] = {}
     if acf_out:
         body["acf"] = acf_out
     if cat_id:
-        body["categories"] = [cat_id]
+        categories = [cid for cid in post.get("categories", [])
+                      if cid not in CATEGORY_MAP.values()]
+        body["categories"] = list(dict.fromkeys(categories + [cat_id]))
     if artist_ids:
         body["artist"] = artist_ids
     if genre_ids:

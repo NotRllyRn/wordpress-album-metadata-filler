@@ -251,7 +251,7 @@ class SearchAndMatchingTests(unittest.TestCase):
         fallback = LastFmFake()
         body = cast(dict, mod.enrich(post, SpotifyFake(), fallback, {7: "Artist"}, cache, wp))
         self.assertEqual(fallback.getinfo_calls, [{"artist": "Artist", "album": "Album", "autocorrect": 0}])
-        self.assertEqual(body["acf"]["music_mood_tags"], [{"mood": "rock"}])
+        self.assertNotIn("music_mood_tags", body["acf"])
         self.assertEqual(body["genre"], [20])
 
         mbid_candidate = {**candidate, "mbid": "123e4567-e89b-12d3-a456-426614174000"}
