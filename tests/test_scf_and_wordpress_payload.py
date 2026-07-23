@@ -66,10 +66,7 @@ def make_post(**changes):
 
 
 def enrich(post, wp=None):
-    wp = wp or WordPressFake()
-    return cast(dict, mod.enrich(
-        post, SpotifyFake(), LastFmFake(), {7: "The Artist"},
-        {"artist": {}, "genre": {}, "release_type": {}}, wp))
+    return cast(dict, mod.enrich(post, SpotifyFake(), LastFmFake(), {7: "The Artist"}))["write"]
 
 
 class PayloadTests(unittest.TestCase):
@@ -95,9 +92,9 @@ class PayloadTests(unittest.TestCase):
         self.assertNotIn("music_tracks", acf)  # existing provider rows are fill-only
         # Category order is preserved, legacy release IDs replaced, and duplicates removed.
         self.assertEqual(body["categories"], [93, 200, 42, 5])
-        self.assertEqual(body["artist"], [10])
-        self.assertEqual(body["genre"], [20, 21, 22])
-        self.assertEqual(body["release_type"], [30])
+        self.assertEqual(body["taxonomies"]["artist"], ["The Artist"])
+        self.assertEqual(body["taxonomies"]["genre"], ["Rock", "Pop", "Ambient"])
+        self.assertEqual(body["taxonomies"]["release_type"], ["Single"])
 
     def test_rebuilt_tracks_preserve_highlight_by_spotify_id(self):
         post = make_post(acf={"music_tracks": [
@@ -135,10 +132,10 @@ class PayloadTests(unittest.TestCase):
     def test_existing_artist_and_genre_are_omitted_without_resolution(self):
         wp = WordPressFake()
         body = enrich(make_post(artist=[99], genre=[98]), wp)
-        self.assertNotIn("artist", body)
-        self.assertNotIn("genre", body)
+        self.assertNotIn("artist", body["taxonomies"])
+        self.assertNotIn("genre", body["taxonomies"])
         self.assertFalse(any(tax in ("artist", "genre") for tax, _ in wp.resolved))
-        self.assertEqual(body["release_type"], [30])
+        self.assertEqual(body["taxonomies"]["release_type"], ["Single"])
 
     def test_completion_requires_artist_and_release_type_not_genre(self):
         acf = {name: (False if name == "music_explicit" else 1)
@@ -147,20 +144,6 @@ class PayloadTests(unittest.TestCase):
             make_post(acf=acf, artist=[1], genre=[], release_type=[2])))
         self.assertFalse(mod.post_is_complete(make_post(acf=acf, release_type=[2])))
         self.assertFalse(mod.post_is_complete(make_post(acf=acf, artist=[1])))
-
-    def test_unresolved_release_type_returns_no_partial_payload(self):
-        class MissingReleaseType(WordPressFake):
-            def create_term(self, tax, name) -> int | None:
-                self.resolved.append((tax, name))
-                return None if tax == "release_type" else self.ids[name]
-
-        body = enrich(make_post(), MissingReleaseType())
-        self.assertEqual(body, {
-            "__unresolved__": True,
-            "reason": "release_type_unresolved",
-            "details": {"release_type": "Single"},
-            "candidates": [],
-        })
 
     def test_genre_filter_is_case_insensitive_deduped_ordered_and_capped(self):
         info = {"toptags": {"tag": ["Seen Live", "Artist", "Rock", "rock",
@@ -177,10 +160,8 @@ class PayloadTests(unittest.TestCase):
                 data["toptags"] = {"tag": ["AOTY", "The Artist"]}
                 return data
         wp = WordPressFake()
-        body = cast(dict, mod.enrich(
-            make_post(), SpotifyFake(), EmptyGenres(), {7: "The Artist"},
-            {"artist": {}, "genre": {}, "release_type": {}}, wp))
-        self.assertNotIn("genre", body)
+        body = cast(dict, mod.enrich(make_post(), SpotifyFake(), EmptyGenres(), {7: "The Artist"}))["write"]
+        self.assertNotIn("genre", body["taxonomies"])
         self.assertNotIn(("genre", "Unknown"), wp.resolved)
 
 

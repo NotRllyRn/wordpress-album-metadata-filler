@@ -23,7 +23,7 @@ import urllib.parse
 import urllib.request
 import unicodedata
 from collections import OrderedDict
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -71,6 +71,17 @@ LFM_BLOCKLIST = (
     r"^favorites?$",
     r"^under \d+$",        # under-2000 listeners / plays
 )
+
+PLAN_SCHEMA_VERSION = 1
+TAXONOMIES = ("artist", "genre", "release_type")
+RELEASE_TYPES = frozenset(CATEGORY_MAP)
+DIAGNOSTIC_CODES = frozenset({
+    "spotify_missing_artist", "spotify_no_results", "spotify_low_confidence",
+    "spotify_ambiguous", "spotify_provider_error", "lastfm_no_results",
+    "lastfm_low_confidence", "lastfm_ambiguous", "lastfm_provider_error",
+    "lastfm_identity_mismatch", "lastfm_no_mbid", "lastfm_no_tracks",
+    "lastfm_track_mismatch", "lastfm_no_tags",
+})
 
 # --------------------------------------------------------------------------- #
 # Tiny utilities
@@ -123,7 +134,21 @@ def _post_dmy(date_iso: str) -> str:
 
 
 def _now_iso() -> str:
-    return datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _safe_error(exc: BaseException) -> str:
+    """Keep operational diagnostics concise and avoid response/credential dumps."""
+    text = " ".join(str(exc).split())
+    return (text[:197] + "...") if len(text) > 200 else text
+
+
+def write_json_atomic(path: str | Path, value: Any) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(value, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    temporary.replace(path)
 
 # --------------------------------------------------------------------------- #
 # Release-type heuristic (locked-in per plugin + tracker analysis)
@@ -541,16 +566,38 @@ class WordPress:
                 return 0
 
     def list_tax_terms(self, tax: str) -> dict[str, int]:
-        """slug → id cache."""
-        url = self._url(f"/{tax}", per_page=100)
-        try:
-            rows, _ = self._req_get(url)
-        except urllib.error.HTTPError as exc:
-            if exc.code in (400, 404):
-                rows = []
-            else:
+        """Return every term; only a later out-of-range 400 ends pagination."""
+        found: dict[str, int] = {}
+        page = 1
+        while True:
+            try:
+                rows, headers = self._req_get(
+                    self._url(f"/{tax}", per_page=100, page=page))
+            except urllib.error.HTTPError as exc:
+                # WordPress uses this specific REST error to end headerless pagination.
+                if exc.code == 400 and page > 1:
+                    try:
+                        error = json.loads(exc.read().decode("utf-8"))
+                    except (AttributeError, UnicodeDecodeError, json.JSONDecodeError):
+                        raise exc
+                    if (isinstance(error, dict) and
+                            error.get("code") == "rest_post_invalid_page_number"):
+                        return found
                 raise
-        return {r["name"]: r["id"] for r in rows}
+            if not isinstance(rows, list):
+                raise RuntimeError(f"WordPress {tax} response was not a list")
+            for row in rows:
+                found[row["name"]] = row["id"]
+            raw_pages = headers.get("X-WP-TotalPages") or headers.get("x-wp-totalpages")
+            if raw_pages is not None:
+                try:
+                    if page >= int(raw_pages):
+                        return found
+                except (TypeError, ValueError) as exc:
+                    raise RuntimeError("Invalid X-WP-TotalPages header") from exc
+            elif len(rows) < 100:
+                return found
+            page += 1
 
     def list_tags(self, name_to_id: dict[int, str]) -> dict[int, str]:
         url = self._url("/tags", per_page=100, page=1)
@@ -674,11 +721,21 @@ def _set_if_empty(acf_in: dict, acf_out: dict, key: str, value: Any) -> None:
 # Per-post enrichment
 # --------------------------------------------------------------------------- #
 
+def _diagnostic_code(reason: str) -> str:
+    return {"lastfm_ambiguous_exact": "lastfm_ambiguous",
+            "lastfm_identity_changed": "lastfm_identity_mismatch",
+            "lastfm_track_contradiction": "lastfm_track_mismatch",
+            "provider_error": "lastfm_provider_error"}.get(reason, reason)
+
+
+def _unresolved(post: dict, code: str, message: str) -> dict:
+    return {"post_id": post["id"], "post_title": post["title"]["rendered"],
+            "diagnostics": [{"code": _diagnostic_code(code), "message": message or code}]}
+
+
 def enrich(post: dict, spt: Any, lfm: Any,
-           tag_id_to_name: dict[int, str],
-           tax_term_cache: dict[str, dict[str, int]],
-           wp: Any) -> dict | None:
-    """Return a PATCH body for the post or None when no work is needed."""
+           tag_id_to_name: dict[int, str]) -> dict | None:
+    """Build declarative provider evidence and writes; never resolve or write WP terms."""
     pid  = post["id"]
     acf_in = post.get("acf") or {}
     title = post["title"]["rendered"]
@@ -695,19 +752,16 @@ def enrich(post: dict, spt: Any, lfm: Any,
               pid, title, tag_names, post_date)
 
     if not q_artists:
-        return {"__unresolved__": True, "reason": "spotify_missing_artist",
-                "details": {}, "candidates": []}
+        return _unresolved(post, "spotify_missing_artist", "No artist tags were available.")
     try:
         cands = search_ladder(spt, q_title, q_artists)
     except (OSError, RuntimeError, ValueError) as exc:
-        return {"__unresolved__": True, "reason": "spotify_provider_error",
-                "details": {"error": str(exc)}, "candidates": []}
+        return _unresolved(post, "spotify_provider_error", _safe_error(exc))
     spotify_match = choose_spotify_candidate(cands, q_title, q_artists)
     winner = spotify_match.get("candidate")
     if winner is None:
-        return {"__unresolved__": True, "reason": spotify_match["reason"],
-                "details": {k: spotify_match[k] for k in ("score", "title_score", "artist_score")
-                            if k in spotify_match}, "candidates": cands[:5]}
+        return _unresolved(post, spotify_match["reason"],
+                           "Spotify did not produce a safe unique match.")
 
     log.info("post %d '%s' -> Spotify %s '%s' (%d tracks)",
              pid, title, winner["id"], winner["name"], winner.get("total_tracks", 0))
@@ -715,15 +769,17 @@ def enrich(post: dict, spt: Any, lfm: Any,
     try:
         album = spt.album(winner["id"])
         tracks = spt.all_tracks(winner["id"])
+    except (OSError, RuntimeError, ValueError, KeyError) as exc:
+        return _unresolved(post, "spotify_provider_error", _safe_error(exc))
+    try:
         lfm_candidates = lfm.album_search(album["name"], limit=10)
     except (OSError, RuntimeError, ValueError, KeyError) as exc:
-        return {"__unresolved__": True, "reason": "provider_error",
-                "details": {"error": str(exc)}, "candidates": []}
+        return _unresolved(post, "lastfm_provider_error", _safe_error(exc))
     lastfm_match = choose_lastfm_candidate(album, lfm_candidates)
     selected = lastfm_match.get("candidate")
     if selected is None:
-        return {"__unresolved__": True, "reason": lastfm_match["reason"],
-                "details": {}, "candidates": lfm_candidates[:5]}
+        return _unresolved(post, lastfm_match["reason"],
+                           "Last.fm did not produce a safe unique match.")
     try:
         mbid = selected.get("mbid")
         info = (lfm.album_getinfo(mbid=mbid) if mbid else
@@ -731,11 +787,10 @@ def enrich(post: dict, spt: Any, lfm: Any,
                                   album=selected.get("name"), autocorrect=0))
         validation = validate_lastfm_info(album, tracks, selected, info)
     except (OSError, RuntimeError, ValueError) as exc:
-        return {"__unresolved__": True, "reason": "lastfm_provider_error",
-                "details": {"error": str(exc)}, "candidates": []}
+        return _unresolved(post, "lastfm_provider_error", _safe_error(exc))
     if not validation["accepted"]:
-        return {"__unresolved__": True, "reason": validation["reason"],
-                "details": validation, "candidates": [selected]}
+        code = _diagnostic_code(validation["reason"])
+        return _unresolved(post, code, "Last.fm album validation failed.")
     genre_names = pick_top_tags(
         info, max_n=3, blocklist=LFM_BLOCKLIST,
         artist_names=(a.get("name", "") for a in album.get("artists", [])),
@@ -781,40 +836,41 @@ def enrich(post: dict, spt: Any, lfm: Any,
     _set_if_empty(acf_in, acf_out, "music_explicit",     any(t["explicit"] for t in track_rows))
     _set_if_empty(acf_in, acf_out, "listen_count", 1)
 
-    # Taxonomy REST arrays replace assignments: resolve only when fill is needed.
-    artist_ids = []
-    if not post.get("artist"):
-        artist_ids = [_ensure_term(wp, tax_term_cache, "artist", name) or 0
-                      for name in tag_names]
-        artist_ids = [i for i in artist_ids if i]
-
-    genre_ids = []
-    if not post.get("genre") and genre_names:
-        genre_ids = [_ensure_term(wp, tax_term_cache, "genre", name) or 0
-                     for name in genre_names]
-        genre_ids = [i for i in genre_ids if i]
-
-    rt_id = _ensure_term(wp, tax_term_cache, "release_type", rt_term_name) or 0
-    if not rt_id:
-        return {"__unresolved__": True, "reason": "release_type_unresolved",
-                "details": {"release_type": rt_term_name}, "candidates": []}
-    cat_id = CATEGORY_MAP.get(rt_term_name)
-
-    body: dict[str, Any] = {}
+    write: dict[str, Any] = {}
     if acf_out:
-        body["acf"] = acf_out
-    if cat_id:
-        categories = [cid for cid in post.get("categories", [])
-                      if cid not in CATEGORY_MAP.values()]
-        body["categories"] = list(dict.fromkeys(categories + [cat_id]))
-    if artist_ids:
-        body["artist"] = artist_ids
-    if genre_ids:
-        body["genre"] = genre_ids
-    if rt_id:
-        body["release_type"] = [rt_id]
-
-    return body
+        write["acf"] = acf_out
+    cat_id = CATEGORY_MAP[rt_term_name]
+    categories = list(dict.fromkeys(
+        [cid for cid in post.get("categories", []) if cid not in CATEGORY_MAP.values()] + [cat_id]))
+    if categories != post.get("categories", []):
+        write["categories"] = categories
+    taxonomies = {"release_type": [rt_term_name]}
+    if not post.get("artist") and tag_names:
+        taxonomies["artist"] = list(dict.fromkeys(tag_names))
+    if not post.get("genre") and genre_names:
+        taxonomies["genre"] = genre_names
+    write["taxonomies"] = taxonomies
+    diagnostics = []
+    if not info.get("mbid"):
+        diagnostics.append({"code": "lastfm_no_mbid", "message": "Validated Last.fm album has no MBID."})
+    if "overlap" not in validation:
+        diagnostics.append({"code": "lastfm_no_tracks", "message": "Last.fm supplied no tracks for comparison."})
+    if not genre_names:
+        diagnostics.append({"code": "lastfm_no_tags", "message": "No acceptable Last.fm genre tags were returned."})
+    spotify_score = spotify_match.get("score", spotify_candidate_score(winner, q_title, q_artists)["score"])
+    lastfm_score = lastfm_match.get("score", lastfm_candidate_score(album, selected)["score"])
+    lastfm_evidence = {"title": selected["name"], "artist": selected["artist"],
+                       "score": lastfm_score}
+    if info.get("mbid"): lastfm_evidence["mbid"] = info["mbid"]
+    if "overlap" in validation: lastfm_evidence["track_overlap"] = validation["overlap"]
+    patch = {"post_id": pid, "post_title": title,
+             "matches": {"spotify": {"id": album["id"], "title": album["name"],
+                                        "artists": [a["name"] for a in album.get("artists", [])],
+                                        "score": spotify_score},
+                         "lastfm": lastfm_evidence},
+             "write": write, "diagnostics": diagnostics}
+    if "modified" in post: patch["source_modified"] = post["modified"]
+    return patch
 
 
 def _ensure_term(wp: WordPress, cache: dict[str, dict[str, int]],
@@ -837,73 +893,217 @@ def _ensure_term(wp: WordPress, cache: dict[str, dict[str, int]],
 
 
 # --------------------------------------------------------------------------- #
+# Plan validation and replay
+# --------------------------------------------------------------------------- #
+
+APPROVED_ACF_TYPES = {
+    "spotify_title": str, "music_tracks": list, "music_length_ms": int,
+    "spotify_album_id": str, "spotify_album_url": str, "music_release_date": str,
+    "music_listened_at": str, "lastfm_release_id": str, "music_total_tracks": int,
+    "music_avg_track_ms": int, "music_explicit": bool, "listen_count": int,
+}
+TRACK_KEYS = {"disc_number", "track_number", "title", "duration_ms", "spotify_id", "highlight", "explicit"}
+
+
+def _plan_error(path: str, message: str) -> None:
+    raise ValueError(f"Invalid plan at {path}: {message}")
+
+
+def _exact(obj: Any, required: set[str], optional: set[str], path: str) -> None:
+    if not isinstance(obj, dict) or set(obj) - required - optional or required - set(obj):
+        _plan_error(path, "unsupported or missing keys")
+
+
+def _positive_int(value: Any) -> bool:
+    return type(value) is int and value > 0
+
+
+def _score_value(value: Any) -> bool:
+    return (type(value) in (int, float) and value == value and
+            value not in (float("inf"), float("-inf")) and 0 <= value <= 1)
+
+
+def validate_plan(plan: Any) -> dict:
+    """Recursively validate the complete artifact before slicing or writes."""
+    _exact(plan, {"schema_version", "generated_at", "patches"}, set(), "root")
+    if type(plan["schema_version"]) is not int or plan["schema_version"] != PLAN_SCHEMA_VERSION:
+        _plan_error("schema_version", "unsupported version")
+    if not isinstance(plan["generated_at"], str) or not plan["generated_at"]:
+        _plan_error("generated_at", "must be nonempty")
+    if not isinstance(plan["patches"], list): _plan_error("patches", "must be list")
+    seen: set[int] = set()
+    for index, patch in enumerate(plan["patches"]):
+        path = f"patches[{index}]"
+        _exact(patch, {"post_id", "post_title", "matches", "write", "diagnostics"}, {"source_modified"}, path)
+        if not _positive_int(patch["post_id"]) or patch["post_id"] in seen:
+            _plan_error(path + ".post_id", "must be a unique positive integer")
+        seen.add(patch["post_id"])
+        if not isinstance(patch["post_title"], str): _plan_error(path + ".post_title", "must be string")
+        if "source_modified" in patch and patch["source_modified"] is not None and not isinstance(patch["source_modified"], str): _plan_error(path + ".source_modified", "must be string or null")
+        _exact(patch["matches"], {"spotify", "lastfm"}, set(), path + ".matches")
+        spotify = patch["matches"]["spotify"]
+        _exact(spotify, {"id", "title", "artists", "score"}, set(), path + ".matches.spotify")
+        if (not all(isinstance(spotify[k], str) and spotify[k] for k in ("id", "title")) or
+                not isinstance(spotify["artists"], list) or not spotify["artists"] or
+                not all(isinstance(x, str) and x for x in spotify["artists"]) or
+                not _score_value(spotify["score"])): _plan_error(path + ".matches.spotify", "invalid evidence")
+        lastfm = patch["matches"]["lastfm"]
+        _exact(lastfm, {"title", "artist", "score"}, {"mbid", "track_overlap"}, path + ".matches.lastfm")
+        if (not all(isinstance(lastfm[k], str) and lastfm[k] for k in ("title", "artist")) or
+                not _score_value(lastfm["score"])): _plan_error(path + ".matches.lastfm", "invalid evidence")
+        if "track_overlap" in lastfm and not _score_value(lastfm["track_overlap"]): _plan_error(path + ".matches.lastfm.track_overlap", "invalid score")
+        if "mbid" in lastfm and (not isinstance(lastfm["mbid"], str) or not lastfm["mbid"]): _plan_error(path + ".matches.lastfm.mbid", "must be nonempty")
+        write = patch["write"]
+        _exact(write, set(), {"acf", "categories", "taxonomies"}, path + ".write")
+        if not write: _plan_error(path + ".write", "must be nonempty")
+        if "acf" in write:
+            if not isinstance(write["acf"], dict) or not write["acf"]: _plan_error(path + ".write.acf", "must be nonempty object")
+            for key, value in write["acf"].items():
+                if key not in APPROVED_ACF_TYPES or type(value) is not APPROVED_ACF_TYPES[key]: _plan_error(path + ".write.acf." + key, "unknown or wrong type")
+                if isinstance(value, str) and not value: _plan_error(path + ".write.acf." + key, "must be nonempty")
+            if "music_tracks" in write["acf"] and not write["acf"]["music_tracks"]:
+                # Repeater replacement with an empty list would clear existing tracks.
+                _plan_error(path + ".write.acf.music_tracks", "must be nonempty")
+            for row in write["acf"].get("music_tracks", []):
+                _exact(row, TRACK_KEYS, set(), path + ".write.acf.music_tracks[]")
+                if (not all(_positive_int(row[k]) for k in ("disc_number", "track_number", "duration_ms")) or
+                    type(row["highlight"]) is not bool or type(row["explicit"]) is not bool or
+                    not all(isinstance(row[k], str) and row[k] for k in ("title", "spotify_id"))): _plan_error(path + ".write.acf.music_tracks[]", "invalid row")
+        if "categories" in write:
+            values = write["categories"]
+            if not isinstance(values, list) or not values or not all(_positive_int(x) for x in values) or len(values) != len(set(values)): _plan_error(path + ".write.categories", "invalid replacement")
+        if "taxonomies" in write:
+            taxes = write["taxonomies"]
+            if not isinstance(taxes, dict) or not taxes or set(taxes) - set(TAXONOMIES): _plan_error(path + ".write.taxonomies", "invalid object")
+            for tax, names in taxes.items():
+                if not isinstance(names, list) or not names or not all(isinstance(n, str) and n.strip() for n in names) or len(names) != len({match_key(n) for n in names}): _plan_error(path + ".write.taxonomies." + tax, "invalid names")
+            if "release_type" in taxes and (len(taxes["release_type"]) != 1 or taxes["release_type"][0] not in RELEASE_TYPES): _plan_error(path + ".write.taxonomies.release_type", "invalid value")
+        if not isinstance(patch["diagnostics"], list): _plan_error(path + ".diagnostics", "must be list")
+        for diagnostic in patch["diagnostics"]:
+            _exact(diagnostic, {"code", "message"}, set(), path + ".diagnostics[]")
+            if diagnostic["code"] not in DIAGNOSTIC_CODES or not isinstance(diagnostic["message"], str) or not diagnostic["message"]: _plan_error(path + ".diagnostics[]", "invalid diagnostic")
+    return plan
+
+
+def validate_unresolved(value: Any) -> dict:
+    _exact(value, {"schema_version", "unresolved"}, set(), "root")
+    if type(value["schema_version"]) is not int or value["schema_version"] != PLAN_SCHEMA_VERSION:
+        _plan_error("schema_version", "unsupported version")
+    if not isinstance(value["unresolved"], list):
+        _plan_error("unresolved", "must be list")
+    seen = set()
+    for index, row in enumerate(value["unresolved"]):
+        path = f"unresolved[{index}]"
+        _exact(row, {"post_id", "post_title", "diagnostics"}, set(), path)
+        if not _positive_int(row["post_id"]) or row["post_id"] in seen:
+            _plan_error(path + ".post_id", "must be a unique positive integer")
+        seen.add(row["post_id"])
+        if not isinstance(row["post_title"], str):
+            _plan_error(path + ".post_title", "must be string")
+        if not isinstance(row["diagnostics"], list) or not row["diagnostics"]:
+            _plan_error(path + ".diagnostics", "must be nonempty list")
+        for diagnostic in row["diagnostics"]:
+            _exact(diagnostic, {"code", "message"}, set(), path + ".diagnostics[]")
+            if (diagnostic["code"] not in DIAGNOSTIC_CODES or
+                    not isinstance(diagnostic["message"], str) or not diagnostic["message"]):
+                _plan_error(path + ".diagnostics[]", "invalid diagnostic")
+    return value
+
+
+def slice_items(items: list, offset: int, limit: int | None) -> list:
+    if offset < 0 or (limit is not None and limit < 0):
+        raise ValueError("offset and limit must be non-negative")
+    return items[offset:] if limit is None else items[offset:offset + limit]
+
+
+def materialize_body(write: dict, term_ids: dict[str, dict[str, int]]) -> dict:
+    """Absent replacement keys remain absent; only present names become IDs."""
+    body = {}
+    if "acf" in write: body["acf"] = dict(write["acf"])
+    if "categories" in write: body["categories"] = list(write["categories"])
+    for tax, names in write.get("taxonomies", {}).items():
+        body[tax] = [term_ids[tax][match_key(name)] for name in names]
+    return body
+
+
+# --------------------------------------------------------------------------- #
 # Subcommands
 # --------------------------------------------------------------------------- #
 
+def _resolve_terms(wp: Any, patches: list[dict]) -> dict[str, dict[str, int]]:
+    wanted = {tax: {} for tax in TAXONOMIES}
+    for patch in patches:
+        for tax, names in patch["write"].get("taxonomies", {}).items():
+            for name in names:
+                wanted[tax].setdefault(match_key(name), name)
+    resolved: dict[str, dict[str, int]] = {tax: {} for tax in TAXONOMIES}
+    for tax in TAXONOMIES:
+        existing = wp.list_tax_terms(tax)
+        resolved[tax] = {match_key(name): term_id for name, term_id in existing.items()}
+        for key, name in wanted[tax].items():
+            if key not in resolved[tax]:
+                term_id = wp.create_term(tax, name)
+                if not term_id:
+                    raise RuntimeError(f"Could not resolve taxonomy term {tax}/{name}")
+                resolved[tax][key] = term_id
+    return resolved
+
+
+def apply_patches(wp: Any, patches: list[dict]) -> tuple[list[int], list[dict]]:
+    term_ids = _resolve_terms(wp, patches)  # all resolution precedes the first post update
+    succeeded, failed = [], []
+    for patch in patches:
+        try:
+            wp.update_post(patch["post_id"], materialize_body(patch["write"], term_ids))
+            succeeded.append(patch["post_id"])
+        except (OSError, RuntimeError, ValueError, KeyError) as exc:
+            failed.append({"post_id": patch["post_id"], "message": _safe_error(exc)})
+    return succeeded, failed
+
+
 def cmd_run(args, env) -> int:
-    wp    = WordPress(env["WORDPRESS_BASE_URL"], env["WORDPRESS_USERNAME"], env["WORDPRESS_APP_PASSWORD"])
-    spt   = Spotify(env["SPOTIFY_CLIENT_ID"], env["SPOTIFY_CLIENT_SECRET"])
-    lfm   = LastFM(env["LASTFM_API_KEY"])
-
+    wp = WordPress(env["WORDPRESS_BASE_URL"], env["WORDPRESS_USERNAME"], env["WORDPRESS_APP_PASSWORD"])
+    spt = Spotify(env["SPOTIFY_CLIENT_ID"], env["SPOTIFY_CLIENT_SECRET"])
+    lfm = LastFM(env["LASTFM_API_KEY"])
     tag_id_to_name: dict[int, str] = {}
-    log.info("Fetching tag dictionary (534 tags)…")
     wp.list_tags(tag_id_to_name)
-
-    tax_term_cache: dict[str, dict[str, int]] = {}
-    # Pre-warm the three custom taxonomies + the 4 release_type terms + genre seed (none).
-    for tax in ("artist", "genre", "release_type"):
-        tax_term_cache[tax] = wp.list_tax_terms(tax)
-    for term in ("Album", "EP", "Single", "Compilation"):
-        _ensure_term(wp, tax_term_cache, "release_type", term)
-
-    out_dir = Path(args.out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    planned_path = out_dir / "planned_patches.json"
-    unresolved_path = out_dir / "unresolved.json"
-
-    planned: list[dict] = []
-    unresolved: list[dict] = []
-
-    limit = args.limit if args.limit is not None else None
-    offset = args.offset
-    seen = 0
-    total_done = 0
-
-    for post in wp.list_posts(per_page=100):
-        if seen < offset:
-            seen += 1
+    planned, unresolved = [], []
+    posts = slice_items(list(wp.list_posts(per_page=100)), args.offset, args.limit)
+    for post in posts:
+        result = enrich(post, spt, lfm, tag_id_to_name)
+        if result is None:
             continue
-        if limit is not None and total_done >= limit:
-            break
-        total_done += 1
-        seen += 1
-
-        body = enrich(post, spt, lfm, tag_id_to_name, tax_term_cache, wp)
-
-        if body is None:
-            continue
-        if body.get("__unresolved__"):
-            unresolved.append({
-                "post_id": post["id"], "title": post["title"]["rendered"],
-                "tags": post.get("tags", []), "reason": body.get("reason", "unresolved"),
-                "details": body.get("details", {}), "candidates": body["candidates"],
-            })
-            continue
-
-        if args.dry_run:
-            planned.append({"post_id": post["id"], "title": post["title"]["rendered"],
-                            "body": body})
+        if "write" in result:
+            planned.append(result)
         else:
-            wp.update_post(post["id"], body)
-            log.info("post %d written", post["id"])
-            # 1 req/s uniformity (Spotify already covers its own quota).
-            time.sleep(0.5)
-
-    planned_path.write_text(json.dumps(planned, indent=2, ensure_ascii=False), encoding="utf-8")
-    unresolved_path.write_text(json.dumps(unresolved, indent=2, ensure_ascii=False), encoding="utf-8")
-    log.info("Done — %d planned, %d unresolved.  planned=%s  unresolved=%s",
-             len(planned), len(unresolved), planned_path, unresolved_path)
+            unresolved.append(result)
+    plan = {"schema_version": PLAN_SCHEMA_VERSION, "generated_at": _now_iso(), "patches": planned}
+    validate_plan(plan)
+    out_dir = Path(args.out_dir)
+    write_json_atomic(out_dir / "planned.json", plan)
+    unresolved_file = validate_unresolved(
+        {"schema_version": PLAN_SCHEMA_VERSION, "unresolved": unresolved})
+    write_json_atomic(out_dir / "unresolved.json", unresolved_file)
+    if args.apply:
+        log.warning("run --apply is deprecated; use apply-plan")
+        succeeded, failed = apply_patches(wp, planned)
+        write_json_atomic(out_dir / "applied.json", {
+            "schema_version": PLAN_SCHEMA_VERSION, "plan": str(out_dir / "planned.json"),
+            "applied_at": _now_iso(), "succeeded": succeeded, "failed": failed})
+        return 1 if failed else 0
     return 0
+
+
+def cmd_apply_plan(args, env) -> int:
+    plan = validate_plan(json.loads(Path(args.plan).read_text(encoding="utf-8")))
+    selected = slice_items(plan["patches"], args.offset, args.limit)
+    wp = WordPress(env["WORDPRESS_BASE_URL"], env["WORDPRESS_USERNAME"], env["WORDPRESS_APP_PASSWORD"])
+    succeeded, failed = apply_patches(wp, selected)
+    out_dir = Path(args.out_dir) if args.out_dir else Path(args.plan).parent
+    write_json_atomic(out_dir / "applied.json", {
+        "schema_version": PLAN_SCHEMA_VERSION, "plan": str(args.plan), "applied_at": _now_iso(),
+        "succeeded": succeeded, "failed": failed})
+    return 1 if failed else 0
 
 
 def cmd_stats(args, env) -> int:
@@ -977,8 +1177,13 @@ def load_env(path: str | None) -> dict[str, str]:
     for k in ("WORDPRESS_BASE_URL", "WORDPRESS_USERNAME", "WORDPRESS_APP_PASSWORD",
               "LASTFM_API_KEY", "SPOTIFY_CLIENT_ID", "SPOTIFY_CLIENT_SECRET"):
         env.setdefault(k, os.environ.get(k, ""))
-        if not env[k]:
-            log.warning("env %s is missing", k)
+    return env
+
+
+def require_env(env: dict[str, str], *names: str) -> dict[str, str]:
+    missing = [name for name in names if not env.get(name)]
+    if missing:
+        raise SystemExit("Missing environment variables: " + ", ".join(missing))
     return env
 
 
@@ -1005,6 +1210,12 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--apply", action="store_true", help="write to WordPress")
     run.add_argument("--out-dir", default="out", help="directory for dry-run JSON")
 
+    apply_plan = sub.add_parser("apply-plan", parents=[base], help="validate and apply a saved plan")
+    apply_plan.add_argument("plan")
+    apply_plan.add_argument("--offset", type=int, default=0)
+    apply_plan.add_argument("--limit", type=int)
+    apply_plan.add_argument("--out-dir")
+
     stats = sub.add_parser("stats", parents=[base], help="report fill-rate before/after")
 
     fuzzy = sub.add_parser("fuzzy", parents=[base], help="debug-search Spotify for a (title, artists…) pair")
@@ -1020,17 +1231,21 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=level, format="%(asctime)s [%(levelname)s] %(message)s",
                         datefmt="%H:%M:%S")
 
+    env = load_env(args.env)
+    wp_names = ("WORDPRESS_BASE_URL", "WORDPRESS_USERNAME", "WORDPRESS_APP_PASSWORD")
     if args.cmd == "run":
-        # resolve apply/dry-run default
         if not args.dry_run and not args.apply:
             args.dry_run = True
         if args.dry_run and args.apply:
             ap.error("--dry-run and --apply are mutually exclusive")
-        return cmd_run(args, load_env(args.env))
+        return cmd_run(args, require_env(env, *wp_names, "SPOTIFY_CLIENT_ID",
+                                         "SPOTIFY_CLIENT_SECRET", "LASTFM_API_KEY"))
+    if args.cmd == "apply-plan":
+        return cmd_apply_plan(args, require_env(env, *wp_names))
     if args.cmd == "stats":
-        return cmd_stats(args, load_env(args.env))
+        return cmd_stats(args, require_env(env, *wp_names))
     if args.cmd == "fuzzy":
-        return cmd_fuzzy(args, load_env(args.env))
+        return cmd_fuzzy(args, require_env(env, "SPOTIFY_CLIENT_ID", "SPOTIFY_CLIENT_SECRET"))
     ap.error("unknown subcommand")
     return 2
 

@@ -190,8 +190,8 @@ class SearchAndMatchingTests(unittest.TestCase):
     def test_enrich_distinguishes_no_artist_provider_error_and_no_results(self):
         post = {"id": 1, "title": {"rendered": "Album"}, "date": "2020-01-01",
                 "tags": [], "acf": {}}
-        result = cast(dict, mod.enrich(post, object(), object(), {}, {}, object()))
-        self.assertEqual(result["reason"], "spotify_missing_artist")
+        result = cast(dict, mod.enrich(post, object(), object(), {}))
+        self.assertEqual(result["diagnostics"][0]["code"], "spotify_missing_artist")
 
         class Search:
             def __init__(self, error=False): self.error = error
@@ -199,10 +199,10 @@ class SearchAndMatchingTests(unittest.TestCase):
                 if self.error: raise urllib.error.URLError("down")
                 return []
         post["tags"] = [7]
-        result = cast(dict, mod.enrich(post, Search(error=True), object(), {7: "Artist"}, {}, object()))
-        self.assertEqual(result["reason"], "spotify_provider_error")
-        result = cast(dict, mod.enrich(post, Search(), object(), {7: "Artist"}, {}, object()))
-        self.assertEqual(result["reason"], "spotify_no_results")
+        result = cast(dict, mod.enrich(post, Search(error=True), object(), {7: "Artist"}))
+        self.assertEqual(result["diagnostics"][0]["code"], "spotify_provider_error")
+        result = cast(dict, mod.enrich(post, Search(), object(), {7: "Artist"}))
+        self.assertEqual(result["diagnostics"][0]["code"], "spotify_no_results")
 
     def test_enrich_lastfm_accepted_path_and_failures(self):
         candidate = {"name": "Album", "artist": "Artist"}
@@ -238,30 +238,30 @@ class SearchAndMatchingTests(unittest.TestCase):
         class WordPressFake:
             def list_tax_terms(self, tax): return cache[tax]
         wp = WordPressFake()
-        for fake, reason in ((LastFmFake(search_error=RuntimeError("down")), "provider_error"),
+        for fake, reason in ((LastFmFake(search_error=RuntimeError("down")), "lastfm_provider_error"),
                              (LastFmFake(candidates=[]), "lastfm_no_results")):
             with self.subTest(reason=reason):
-                result = cast(dict, mod.enrich(post, SpotifyFake(), fake, {7: "Artist"}, cache, wp))
-                self.assertEqual(result["reason"], reason)
+                result = cast(dict, mod.enrich(post, SpotifyFake(), fake, {7: "Artist"}))
+                self.assertEqual(result["diagnostics"][0]["code"], reason)
 
         rejected = LastFmFake(info={**candidate, "artist": "Other", "tracks": {}})
-        result = cast(dict, mod.enrich(post, SpotifyFake(), rejected, {7: "Artist"}, cache, wp))
-        self.assertEqual(result["reason"], "lastfm_identity_changed")
+        result = cast(dict, mod.enrich(post, SpotifyFake(), rejected, {7: "Artist"}))
+        self.assertEqual(result["diagnostics"][0]["code"], "lastfm_identity_mismatch")
 
         fallback = LastFmFake()
-        body = cast(dict, mod.enrich(post, SpotifyFake(), fallback, {7: "Artist"}, cache, wp))
+        body = cast(dict, mod.enrich(post, SpotifyFake(), fallback, {7: "Artist"}))
         self.assertEqual(fallback.getinfo_calls, [{"artist": "Artist", "album": "Album", "autocorrect": 0}])
-        self.assertNotIn("music_mood_tags", body["acf"])
-        self.assertEqual(body["genre"], [20])
+        self.assertNotIn("music_mood_tags", body["write"]["acf"])
+        self.assertEqual(body["write"]["taxonomies"]["genre"], ["rock"])
 
         mbid_candidate = {**candidate, "mbid": "123e4567-e89b-12d3-a456-426614174000"}
         pinned = LastFmFake(candidates=[mbid_candidate])
-        mod.enrich(post, SpotifyFake(), pinned, {7: "Artist"}, cache, wp)
+        mod.enrich(post, SpotifyFake(), pinned, {7: "Artist"})
         self.assertEqual(pinned.getinfo_calls, [{"mbid": mbid_candidate["mbid"]}])
 
         malformed = LastFmFake(info={**candidate, "tracks": {"track": ["bad"]}})
-        result = cast(dict, mod.enrich(post, SpotifyFake(), malformed, {7: "Artist"}, cache, wp))
-        self.assertEqual(result["reason"], "lastfm_provider_error")
+        result = cast(dict, mod.enrich(post, SpotifyFake(), malformed, {7: "Artist"}))
+        self.assertEqual(result["diagnostics"][0]["code"], "lastfm_provider_error")
 
         for track_name in (1, ["Song"], {"value": "Song"}):
             with self.subTest(track_name=track_name):
@@ -270,10 +270,10 @@ class SearchAndMatchingTests(unittest.TestCase):
                 )
                 result = cast(
                     dict,
-                    mod.enrich(post, SpotifyFake(), malformed, {7: "Artist"}, cache, wp),
+                    mod.enrich(post, SpotifyFake(), malformed, {7: "Artist"}),
                 )
-                self.assertEqual(result["reason"], "lastfm_provider_error")
-                self.assertIn("malformed track name", result["details"]["error"])
+                self.assertEqual(result["diagnostics"][0]["code"], "lastfm_provider_error")
+                self.assertIn("malformed track name", result["diagnostics"][0]["message"])
 
     def test_cli_parser_and_fuzzy_missing_artist(self):
         args = mod.build_parser().parse_args(["fuzzy", "Album"])
