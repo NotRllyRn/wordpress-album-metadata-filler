@@ -1,3 +1,5 @@
+.pi-subagents/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
@@ -224,3 +226,4 @@ __marimo__/
 /out/planned.json
 /out/unresolved.json
 /out/applied.json
+/out/
